@@ -10,7 +10,8 @@ high-speed storage:
 5. Linux md RAID 0 stripes all four drives with a 512 KiB chunk.
 6. XFS uses matching `su=512k,sw=4` geometry.
 7. Samba exposes one guest-writable `Public` share.
-8. Avahi and wsdd2 provide Apple and Windows discovery.
+8. File Browser exposes the same directory through a mobile-friendly web UI.
+9. Avahi and wsdd2 provide Apple, browser, and Windows discovery.
 
 The array is mounted with `nofail` and bounded device/mount timeouts. A failed
 SSD therefore destroys stored data but must not prevent the Pi from booting,

@@ -14,9 +14,14 @@ vcgencmd get_throttled
 
 Use the `Public` share without a username or password:
 
+- Browser on any device: `http://homelab-nas.local:8080`
 - Apple: `smb://homelab-nas.local/Public`
 - Windows: `\\homelab-nas\Public`
 - Direct Ethernet recovery: `smb://192.168.100.50/Public`
+
+The browser interface and SMB expose the same files. Both are intentionally
+unauthenticated on the home LAN. Never forward ports 445 or 8080 from the
+Internet.
 
 ## Updates
 
@@ -27,6 +32,12 @@ sudo reboot
 ```
 
 Run `scripts/90-verify.sh` after reboot.
+
+## One-command health report
+
+```bash
+scripts/50-health.sh
+```
 
 ## RAID 0 warning
 
