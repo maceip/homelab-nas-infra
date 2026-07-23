@@ -1,0 +1,6 @@
+.DS_Store
+inventory/private/
+secrets/
+*.key
+*.pem
+
