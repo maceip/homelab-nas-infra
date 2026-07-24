@@ -35,3 +35,7 @@ The built-in Ethernet port is 1 Gb/s and is therefore the bottleneck for a
 single network client, normally around 110 MB/s of file throughput. A USB 3
 2.5 GbE adapter and 2.5 GbE switch are the practical next hardware upgrade.
 The existing RAID has enough speed to saturate 2.5 GbE.
+
+This appliance now uses a Realtek RTL8156 USB 3 adapter. Linux bound it to the
+in-kernel `r8152` driver without an additional vendor package. The USB side
+negotiated at 5 Gb/s and the switch side negotiated at 2.5 Gb/s full duplex.

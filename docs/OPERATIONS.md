@@ -23,6 +23,16 @@ The browser interface and SMB expose the same files. Both are intentionally
 unauthenticated on the home LAN. Never forward ports 445 or 8080 from the
 Internet.
 
+## Network paths
+
+- USB 2.5 GbE: primary route, DHCP, metric 50
+- Built-in Gigabit Ethernet: DHCP plus `192.168.100.50/24`, metric 100
+- Wi-Fi: DHCP, metric 600
+
+The profiles are locked to the physical MAC addresses recorded in
+`config/network/interfaces.conf`, so plugging or unplugging the USB adapter
+cannot steal the built-in Ethernet recovery configuration.
+
 ## Updates
 
 ```bash

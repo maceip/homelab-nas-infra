@@ -12,6 +12,8 @@ high-speed storage:
 7. Samba exposes one guest-writable `Public` share.
 8. File Browser exposes the same directory through a mobile-friendly web UI.
 9. Avahi and wsdd2 provide Apple, browser, and Windows discovery.
+10. A Realtek RTL8156 USB 3 adapter provides primary 2.5 GbE networking.
+    Built-in Ethernet and Wi-Fi remain independent recovery paths.
 
 The array is mounted with `nofail` and bounded device/mount timeouts. A failed
 SSD therefore destroys stored data but must not prevent the Pi from booting,

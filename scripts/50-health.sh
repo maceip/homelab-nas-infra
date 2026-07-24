@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=../config/network/interfaces.conf
+source "${repo_dir}/config/network/interfaces.conf"
+
 echo "== CPU and kernel-controlled Pi fan =="
 vcgencmd measure_temp
 vcgencmd get_throttled
@@ -42,3 +46,20 @@ for service in ssh smbd nmbd wsdd2 avahi-daemon filebrowser; do
   printf '%-14s %s\n' "${service}" "$(systemctl is-active "${service}.service")"
 done
 ip -brief address
+
+echo "== Network link speeds =="
+for interface_path in /sys/class/net/*; do
+  [[ -r ${interface_path}/speed ]] || continue
+  interface="$(basename "${interface_path}")"
+  speed="$(<"${interface_path}/speed")"
+  [[ ${speed} =~ ^[0-9]+$ ]] || continue
+  (( speed > 0 )) || continue
+  printf '%-14s %s Mb/s %s\n' \
+    "${interface}" "${speed}" "$(<"${interface_path}/duplex")"
+done
+if [[ -x /usr/sbin/ethtool ]] &&
+  [[ -e /sys/class/net/eth1/address ]] &&
+  [[ $(< /sys/class/net/eth1/address) == "${USB_25GBE_MAC}" ]]; then
+  sudo /usr/sbin/ethtool -i eth1 |
+    grep -E '^(driver|version|firmware-version|bus-info):'
+fi

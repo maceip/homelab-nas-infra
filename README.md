@@ -44,6 +44,7 @@ errors attributable to Gen 3.
 - Android: use an SMB-capable Files app and connect to
   `homelab-nas.local`, share `Public`, as guest.
 - Wi-Fi address at initial build: `192.168.0.36`
+- USB 2.5 GbE address at installation: `192.168.0.56`
 - Direct Ethernet fallback: `192.168.100.50`
 
 The SMB share and web file manager deliberately permit unauthenticated reads

@@ -53,6 +53,9 @@ Raw benchmark output is retained on the Pi under
 - File Browser 2.63.18 was installed with checksum verification.
 - Its no-authentication web flow and create/read/delete API round trip passed
   from macOS.
+- Realtek RTL8156 USB Ethernet was detected by the in-kernel `r8152` driver.
+- USB negotiated at 5,000 Mb/s and Ethernet negotiated at 2,500 Mb/s full
+  duplex.
 
 PCIe Gen 2 fallback was not used because Gen 3 passed every link, health,
 stress, reboot, and client-access check.

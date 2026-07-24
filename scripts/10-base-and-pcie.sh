@@ -16,7 +16,7 @@ apt-get update
 apt-get -y full-upgrade
 apt-get install -y \
   mdadm xfsprogs samba samba-vfs-modules avahi-daemon wsdd2 \
-  smartmontools hdparm fio jq git curl smbclient
+  smartmontools hdparm fio jq git curl smbclient ethtool
 
 config="/boot/firmware/config.txt"
 begin="# BEGIN homelab-nas managed Radxa Penta SATA HAT"
