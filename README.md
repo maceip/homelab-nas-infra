@@ -10,6 +10,7 @@ Radxa Penta SATA HAT and four SSDs.
 - The four SSDs form a maximum-throughput Linux `mdadm` RAID 0 stripe.
 - The stripe is formatted as XFS and mounted at `/srv/storage`.
 - Samba exports `/srv/storage/public` as a writable guest share.
+- File Browser exposes the same directory through a mobile-friendly web UI.
 - Avahi advertises SMB to Apple devices; `wsdd2` advertises it to Windows.
 - The SSD array is never required for boot or SSH. Mount failures use
   `nofail` and bounded systemd timeouts.
@@ -23,8 +24,9 @@ RAID 0 has no redundancy. Failure of any member loses the whole array.
 3. `sudo scripts/20-create-raid0.sh`
 4. `sudo scripts/30-configure-samba.sh`
 5. `sudo scripts/35-configure-network.sh`
-6. `sudo scripts/80-storage-benchmark.sh`
-7. `scripts/90-verify.sh`
+6. `sudo scripts/40-configure-filebrowser.sh`
+7. `sudo scripts/80-storage-benchmark.sh`
+8. `scripts/90-verify.sh`
 
 The storage script is intentionally destructive. It accepts only the four
 SSD serial numbers recorded in `config/storage/disks.conf`, and refuses the
@@ -36,15 +38,18 @@ errors attributable to Gen 3.
 
 ## Client access
 
+- Any device with a browser: `http://homelab-nas.local:8080`
 - Mac/iPhone: `smb://homelab-nas.local/Public`
 - Windows: `\\homelab-nas\Public`
 - Android: use an SMB-capable Files app and connect to
   `homelab-nas.local`, share `Public`, as guest.
 - Wi-Fi address at initial build: `192.168.0.36`
+- USB 2.5 GbE address at installation: `192.168.0.56`
 - Direct Ethernet fallback: `192.168.100.50`
 
-The share deliberately permits unauthenticated reads and writes to anyone on
-the local network. Do not expose TCP port 445 to the Internet.
+The SMB share and web file manager deliberately permit unauthenticated reads
+and writes to anyone on the local network. Do not expose TCP ports 445 or 8080
+to the Internet.
 
 ## Recovery
 
@@ -55,4 +60,5 @@ See [docs/RECOVERY.md](docs/RECOVERY.md).
 - [Architecture](docs/ARCHITECTURE.md)
 - [Operations](docs/OPERATIONS.md)
 - [Recovery](docs/RECOVERY.md)
+- [Fan and performance](docs/FAN-AND-PERFORMANCE.md)
 - [Initial build report](docs/BUILD-REPORT.md)

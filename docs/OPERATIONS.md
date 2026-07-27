@@ -14,9 +14,24 @@ vcgencmd get_throttled
 
 Use the `Public` share without a username or password:
 
+- Browser on any device: `http://homelab-nas.local:8080`
 - Apple: `smb://homelab-nas.local/Public`
 - Windows: `\\homelab-nas\Public`
 - Direct Ethernet recovery: `smb://192.168.100.50/Public`
+
+The browser interface and SMB expose the same files. Both are intentionally
+unauthenticated on the home LAN. Never forward ports 445 or 8080 from the
+Internet.
+
+## Network paths
+
+- USB 2.5 GbE: primary route, DHCP, metric 50
+- Built-in Gigabit Ethernet: DHCP plus `192.168.100.50/24`, metric 100
+- Wi-Fi: DHCP, metric 600
+
+The profiles are locked to the physical MAC addresses recorded in
+`config/network/interfaces.conf`, so plugging or unplugging the USB adapter
+cannot steal the built-in Ethernet recovery configuration.
 
 ## Updates
 
@@ -27,6 +42,12 @@ sudo reboot
 ```
 
 Run `scripts/90-verify.sh` after reboot.
+
+## One-command health report
+
+```bash
+scripts/50-health.sh
+```
 
 ## RAID 0 warning
 
