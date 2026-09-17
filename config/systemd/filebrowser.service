@@ -1,8 +1,8 @@
 [Unit]
-Description=Mobile-friendly web file manager
+Description=File Browser
 Documentation=https://filebrowser.org/
 After=network.target srv-storage.mount
-RequiresMountsFor=/srv/storage
+RequiresMountsFor=/srv/storage/public
 
 [Service]
 Type=simple
@@ -10,19 +10,34 @@ User=nas-share
 Group=nas-share
 StateDirectory=filebrowser
 WorkingDirectory=/var/lib/filebrowser
-ExecStart=/usr/local/bin/filebrowser --database /var/lib/filebrowser/filebrowser.db
+ExecStart=/usr/local/bin/filebrowser \
+  --database /var/lib/filebrowser/filebrowser.db \
+  --root /srv/storage/public \
+  --address 0.0.0.0 \
+  --port 8080 \
+  --disableExec
 Restart=on-failure
 RestartSec=3s
 
 NoNewPrivileges=true
 PrivateTmp=true
+PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectHostname=true
+ProtectClock=true
 ReadWritePaths=/srv/storage/public /var/lib/filebrowser
 CapabilityBoundingSet=
 AmbientCapabilities=
 LockPersonality=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictRealtime=true
 RestrictAddressFamilies=AF_INET AF_INET6
+SystemCallArchitectures=native
 
 [Install]
 WantedBy=multi-user.target

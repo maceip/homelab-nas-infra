@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
+# Print CPU temperature, pwmfan RPM, SSD SMART, PCIe link, RAID, and services.
 set -euo pipefail
 
-repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
-# shellcheck source=../config/network/interfaces.conf
-source "${repo_dir}/config/network/interfaces.conf"
+# shellcheck source=lib/common.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
+# shellcheck source=../config/network/nics.conf
+source "${REPO_DIR}/config/network/nics.conf"
+# shellcheck source=../config/storage/disks.conf
+source "${REPO_DIR}/config/storage/disks.conf"
 
-echo "== CPU and kernel-controlled Pi fan =="
+echo "== CPU and pwmfan =="
 vcgencmd measure_temp
 vcgencmd get_throttled
 for hwmon in /sys/class/hwmon/hwmon*; do
@@ -18,9 +22,9 @@ for hwmon in /sys/class/hwmon/hwmon*; do
 done
 
 echo "== SSD temperature and health =="
-for disk in /dev/sd?; do
-  model="$(lsblk -dno MODEL "${disk}" | xargs)"
-  [[ ${model} == "Samsung SSD 870 QVO 8TB" ]] || continue
+for stable_path in "${RAID_DISKS[@]}"; do
+  [[ -b ${stable_path} ]] || continue
+  disk="$(readlink -f "${stable_path}")"
   temperature="$(
     sudo smartctl -A "${disk}" |
       awk '$1 == 190 { print $10; exit }'
@@ -33,10 +37,15 @@ for disk in /dev/sd?; do
 done
 
 echo "== PCIe and RAID =="
-printf 'pcie_speed='
-cat /sys/bus/pci/devices/0001:01:00.0/current_link_speed
-printf 'pcie_width='
-cat /sys/bus/pci/devices/0001:01:00.0/current_link_width
+slot="$(jmb585_pci_slot)"
+if [[ -z ${slot} ]]; then
+  echo "JMicron JMB585 SATA controller not detected" >&2
+else
+  printf 'pcie_speed='
+  cat "/sys/bus/pci/devices/${slot}/current_link_speed"
+  printf 'pcie_width='
+  cat "/sys/bus/pci/devices/${slot}/current_link_width"
+fi
 sudo mdadm --detail /dev/md0 |
   grep -E 'Raid Level|Array Size|State :|Active Devices|Failed Devices|Chunk Size'
 df -hT /srv/storage
@@ -57,9 +66,9 @@ for interface_path in /sys/class/net/*; do
   printf '%-14s %s Mb/s %s\n' \
     "${interface}" "${speed}" "$(<"${interface_path}/duplex")"
 done
-if [[ -x /usr/sbin/ethtool ]] &&
-  [[ -e /sys/class/net/eth1/address ]] &&
-  [[ $(< /sys/class/net/eth1/address) == "${USB_25GBE_MAC}" ]]; then
-  sudo /usr/sbin/ethtool -i eth1 |
+
+usb_interface="$(interface_for_mac "${USB_25GBE_MAC}" || true)"
+if [[ -n ${usb_interface} ]] && [[ -x /usr/sbin/ethtool ]]; then
+  sudo /usr/sbin/ethtool -i "${usb_interface}" |
     grep -E '^(driver|version|firmware-version|bus-info):'
 fi

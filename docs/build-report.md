@@ -9,7 +9,7 @@ Built and validated on 2026-07-23.
 - Kernel `6.18.34+rpt-rpi-2712`
 - Radxa Penta SATA HAT with JMicron JMB585
 - Four Samsung SSD 870 QVO 8 TB drives
-- PCIe Gen 3 negotiated at 8.0 GT/s x1
+- PCIe Gen 3.0 negotiated at 8.0 GT/s ×1
 - Four SATA links negotiated at 6.0 Gb/s
 - RAID 0 usable size: 29.11 TiB / 32.01 TB
 
@@ -43,19 +43,18 @@ Raw benchmark output is retained on the Pi under
 - Reboot caused a real SSH disconnect and SSH returned 22 seconds later.
 - RAID 0 assembled automatically after reboot.
 - XFS mounted cleanly at `/srv/storage`.
-- SSH, Samba, NetBIOS discovery, wsdd2, and Avahi were all enabled and active.
+- SSH, Samba, NetBIOS name service, wsdd2, and Avahi were enabled and active.
 - No failed systemd units after reboot.
-- Guest SMB read/write/delete passed locally.
-- Native macOS SMB read/write/delete passed over Wi-Fi.
-- Native macOS SMB read/write/delete passed over direct Ethernet.
-- `homelab-nas.local` resolved to both `192.168.0.36` and
-  `192.168.100.50`.
-- File Browser 2.63.18 was installed with checksum verification.
-- Its no-authentication web flow and create/read/delete API round trip passed
+- Guest SMB read, write, and delete passed locally.
+- Native macOS SMB read, write, and delete passed over Wi-Fi.
+- Native macOS SMB read, write, and delete passed over direct Ethernet.
+- `homelab-nas.local` resolved to both `192.168.0.36` and `192.168.100.50`.
+- File Browser 2.63.18 was installed with SHA-256 verification.
+- File Browser `noauth` create, read, and delete through the HTTP API passed
   from macOS.
 - Realtek RTL8156 USB Ethernet was detected by the in-kernel `r8152` driver.
 - USB negotiated at 5,000 Mb/s and Ethernet negotiated at 2,500 Mb/s full
   duplex.
 
-PCIe Gen 2 fallback was not used because Gen 3 passed every link, health,
+PCIe Gen 2.0 fallback was not used because Gen 3.0 passed every link, health,
 stress, reboot, and client-access check.

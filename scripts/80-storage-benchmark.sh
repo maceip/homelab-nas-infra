@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
+# Sequential and random fio against /srv/storage, then SMART on the RAID
+# members. Fails if the kernel log shows PCIe, SATA, or block I/O errors.
 set -euo pipefail
 
-if [[ ${EUID} -ne 0 ]]; then
-  exec sudo "$0" "$@"
-fi
+# shellcheck source=lib/common.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
+require_root "$@"
+
+# shellcheck source=../config/storage/disks.conf
+source "${REPO_DIR}/config/storage/disks.conf"
 
 findmnt --mountpoint /srv/storage >/dev/null || {
   echo "Refusing: /srv/storage is not mounted." >&2
@@ -62,7 +67,8 @@ if grep -Ei 'AER:.*error|PCIe Bus Error|ata[0-9].*(error|failed|reset|timeout)|I
   exit 1
 fi
 
-for disk in /dev/sd?; do
+for stable_path in "${RAID_DISKS[@]}"; do
+  disk="$(readlink -f "${stable_path}")"
   smartctl -H -l error "${disk}"
 done
 vcgencmd get_throttled

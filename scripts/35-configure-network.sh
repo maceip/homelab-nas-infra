@@ -1,26 +1,14 @@
 #!/usr/bin/env bash
+# Create NetworkManager connections matched to the MAC addresses in
+# config/network/nics.conf. USB 2.5 GbE is the primary IPv4 default route.
 set -euo pipefail
 
-if [[ ${EUID} -ne 0 ]]; then
-  exec sudo "$0" "$@"
-fi
+# shellcheck source=lib/common.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
+require_root "$@"
 
-repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
-# shellcheck source=../config/network/interfaces.conf
-source "${repo_dir}/config/network/interfaces.conf"
-
-interface_for_mac() {
-  local expected_mac="${1,,}"
-  local interface
-  for interface_path in /sys/class/net/*; do
-    [[ -r ${interface_path}/address ]] || continue
-    interface="$(basename "${interface_path}")"
-    [[ $(<"${interface_path}/address") == "${expected_mac}" ]] || continue
-    printf '%s\n' "${interface}"
-    return 0
-  done
-  return 1
-}
+# shellcheck source=../config/network/nics.conf
+source "${REPO_DIR}/config/network/nics.conf"
 
 builtin_interface="$(interface_for_mac "${BUILTIN_ETHERNET_MAC}")"
 usb_interface="$(interface_for_mac "${USB_25GBE_MAC}" || true)"
@@ -60,11 +48,11 @@ if [[ -n ${usb_interface} ]]; then
     ipv4.dhcp-timeout 15 \
     ipv4.may-fail yes \
     ipv4.route-metric 50 \
-    ipv6.method auto
+    ipv6.method link-local
   nmcli --wait 20 connection up homelab-2.5gbe ifname "${usb_interface}"
 fi
 
-# Remove the old catch-all profile only after deterministic replacements exist.
+# Delete netplan-eth0 after the MAC address connections exist.
 if nmcli connection show netplan-eth0 >/dev/null 2>&1; then
   nmcli connection delete netplan-eth0
 fi
@@ -80,10 +68,11 @@ wifi_connection="$(
 if [[ -n ${wifi_connection} ]]; then
   nmcli connection modify "${wifi_connection}" \
     802-11-wireless.powersave 2 \
-    ipv4.route-metric 600
+    ipv4.route-metric 600 \
+    ipv6.method link-local
 fi
 
 echo "Network priorities:"
 echo "  USB 2.5 GbE: metric 50 (primary when present)"
-echo "  Built-in Ethernet: metric 100 plus direct recovery at 192.168.100.50"
-echo "  Wi-Fi: metric 600 (independent recovery)"
+echo "  Built-in Ethernet: metric 100 plus 192.168.100.50/24"
+echo "  Wi-Fi: metric 600"
