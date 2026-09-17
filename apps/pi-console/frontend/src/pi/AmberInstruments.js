@@ -22,8 +22,9 @@ function MeterGraphic({
   max
 }) {
   const id = `meter-${kind}-${useId().replace(/:/g, "")}`;
-  const extent=kind==="disk"?191:kind==="temperature"?244:kind==="network"?24:183;
-  const fillWidth = extent * (finite(value)?Math.max(0, Math.min(1, value / max)):0);
+  const extent=kind==="disk"?191:kind==="temperature"?244:kind==="network"?244:183;
+  const ratio=finite(value)?Math.max(0,Math.min(1,value/max)):0;
+  const fillWidth = ratio===0?0:3+(extent-3)*ratio;
   let blocks, rails;
   if (kind === "disk") {
     blocks = [{
@@ -51,7 +52,7 @@ function MeterGraphic({
     rails = [];
   } else if (kind === "network") {
     blocks = [{
-      path: "M3 53h19v6h-3v7H3Z"
+      path: "M3 53H22V50L244 17V66H3Z"
     }];
     // Four separate, collinear strokes: the original fuel gauge's fine rising rail.
     rails = Array.from({
@@ -87,7 +88,7 @@ function MeterGraphic({
       <clipPath id={`${id}-lit`}><rect data-meter-fill={kind} data-value={finite(value)?value:undefined} data-max={max} data-extent={extent} width={fillWidth} height="70" /></clipPath>
     </defs>
     <g className="meter-body">{shapes}</g>
-    <g className="meter-lit" clipPath={`url(#${id}-lit)`}>{shapes}</g>
+    <g className="meter-illumination"><g className="meter-lit" clipPath={`url(#${id}-lit)`}>{shapes}</g></g>
     <g className="meter-scoring" clipPath={`url(#${id}-profile)`}>
       {blocks.flatMap(({
         scores
@@ -97,6 +98,7 @@ function MeterGraphic({
         const x = scores[0] + (scores[1] - scores[0]) * (tick + 1) / 5;
         return <path key={`${block}-${tick}`} d={`M${x} 0v70`} />;
       }) : [])}
+      {kind==="network"&&Array.from({length:24},(_,i)=><path key={`network-${i}`} d={`M${3+(i+1)*10} 0v70`}/>)}
     </g>
     {rails.map(({
       path,
@@ -209,9 +211,10 @@ function RevMeter({
     <svg className="rev-display" viewBox="20 100 454 425" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
       <defs><clipPath id={id}><path d={path} /></clipPath></defs>
       <path d={path} className="rev-resting-band" />
-      <g clipPath={`url(#${id})`}>{Array.from({
+      <g className="rev-illumination"><g clipPath={`url(#${id})`}>{Array.from({
           length: count
-        }, (_, i) => <rect key={i} x={start + i * step} y="170" width={(step-.85)*Math.max(0,Math.min(1,lit-i))} height="340" data-fraction={Math.max(0,Math.min(1,lit-i))} data-active={i<lit?"true":"false"} className={`rev-cell ${i < lit ? "is-lit" : ""}`} />)}</g>
+        }, (_, i) => <rect key={i} x={start + i * step} y="170" width={(step-.85)*Math.max(0,Math.min(1,lit-i))} height="340" data-fraction={Math.max(0,Math.min(1,lit-i))} data-active={i<lit?"true":"false"} className={`rev-cell ${i < lit ? "is-lit" : ""}`} />)}</g></g>
+      <g className="rev-scoring" clipPath={`url(#${id})`}>{Array.from({length:Math.max(0,Math.ceil(lit)-1)},(_,i)=><path key={i} d={`M${start+(i+1)*step-.45} 170v340`}/>)}</g>
       {marks.map(({
         value: mark,
         x,
@@ -238,11 +241,23 @@ function ServiceStrip({side,health,running,network}){
  const status={...health,run:running,net:finite(network)?network>0:null}
  return <div className={'service-strip '+side} aria-label="Service reporting status">{entries.map(([key,label,kind])=><div key={key} className={'annunciator '+(status[key]===true?'online':status[key]===false?'standby':'standby')+' '+(key==='run'?'run-lamp':key==='api'?'api-lamp':'')} aria-label={label+': '+(status[key]===true?'reporting':status[key]===false?'inactive':'not reported')}><Icon kind={kind}/><span>{label}</span></div>)}{[0,1,2].map(i=><div key={i} className="blank-lamp" aria-hidden="true"/>)}</div>
 }
+function Odometer({value}){
+  const alphabet=" ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.-";
+  return <div className="model-odometer" aria-label={value}>
+    {value.split("").map((character,index)=>{
+      const at=Math.max(0,alphabet.indexOf(character));
+      return <span key={index} className={`odometer-wheel ${character===" "?"word-gap":""}`} aria-hidden="true" style={{"--drum-offset":`${[-.06,.035,-.025,.07,-.04][index%5]}cqw`,"--roll-delay":`${index*.045}s`,"--roll-duration":`${1.2+(index%4)*.13}s`}}>
+        <span className="drum-strip">{Array.from({length:9},(_,row)=><span key={row} className={row===4?"drum-current":"drum-neighbor"}>{alphabet[(at+row-4+alphabet.length)%alphabet.length]||"\u00a0"}</span>)}</span>
+      </span>;
+    })}
+  </div>;
+}
+
 export default function AmberInstruments({values:v,system,running,onToggle}){
  const tokens=v.tokens,network=Number(v.network.value),networkMax=finite(network)&&network>0?Math.max(10,10**Math.ceil(Math.log10(network))):10
- return <section className="instrument-cluster" aria-label="Amber LCD performance instrument cluster"><div className="instrument-row">
+ return <section className="instrument-cluster" data-running={running} aria-label="Amber LCD performance instrument cluster"><div className="instrument-row">
   <div className="aux-window glass"><MiniMeter kind="disk" label="DISK" value={v.capacity} max={100} unit="%"/><MiniMeter kind={system?'io':'monthly'} label={system?'DISK I/O':'TOK / MONTH'} value={system?v.io:tokens?.total/1e9} max={system?100:40} unit={system?'%':'B'} places={system?1:0} gaugeKind={system?undefined:'monthly'} exactValue={tokens?Math.floor(tokens.total):undefined}/><MiniMeter kind="temperature" label="CPU TEMP" value={v.temp} max={100} unit="°C" places={1}/><MiniMeter kind="network" label="NETWORK" value={network} max={networkMax} unit={v.network.unit} places={1}/></div>
-  <div className="centre-console"><article className="ram-window glass" aria-label={`RAM usage: ${finite(v.memory)?Math.round(v.memory)+' percent':'unavailable'}`}><h2>RAM USAGE</h2><div className="ram-value"><Digits value={finite(v.memory)?String(Math.round(v.memory)).padStart(3,'0'):'—'}/><span>%</span></div></article><div className="console-signature">GATEWAY ELECTRONICS</div><div className="odometer-row"><article className="model-console"><h2>{system?'DISK I/O · BUSY':'MONTHLY TOKENS'}</h2><div className={'alpha-display '+(!system?'token-odometer':'')} aria-label={system?`Disk I/O: ${display(v.io,1)} percent`:`Monthly tokens: ${Math.floor(tokens?.total).toLocaleString('en-US')}`}><Digits value={system?display(v.io,1):String(Math.floor(tokens?.total))}/>{system&&<span>%</span>}</div></article><article className="small-console"><h2>{system?'AMBIENT':'CPU'}</h2><div className="small-display"><Digits value={display(system?v.ambient:v.cpu,system?1:0)}/><span>{system?'°C':'%'}</span></div></article></div></div>
+  <div className="centre-console"><article className="ram-window glass" aria-label={`RAM usage: ${finite(v.memory)?Math.round(v.memory)+' percent':'unavailable'}`}><h2>RAM USAGE</h2><div className="ram-value"><Digits value={finite(v.memory)?String(Math.round(v.memory)).padStart(3,'0'):'—'}/><span>%</span></div></article><div className="console-signature">GATEWAY ELECTRONICS</div><div className="odometer-row"><article className="model-console"><h2>MODEL</h2><div className="alpha-display token-odometer"><Odometer value="Qwen4Exp"/></div>{!system&&<span className="sr-only" aria-label={`Monthly tokens: ${Math.floor(tokens?.total).toLocaleString('en-US')}`}/>}</article><article className="small-console"><h2>{system?'AMBIENT':'CPU'}</h2><div className="small-display"><Digits value={display(system?v.ambient:v.cpu,system?1:0)}/><span>{system?'°C':'%'}</span></div></article></div></div>
   <RevMeter value={system?v.cpu:tokens?.tps} system={system}/>
  </div><div className="lower-console"><ServiceStrip side="left" health={v.health} running={running} network={network}/><div className="mode-knob"><span className={running?'selected':''}>RUN</span><button className={`knob ${running?'running':''}`} onClick={onToggle} aria-label={running?'Hold displayed readings':'Resume live readings'} aria-pressed={!running} title={running?'Hold displayed readings':'Resume live readings'}><BrandMark/></button><span className={!running?'selected':''}>HOLD</span></div><ServiceStrip side="right" health={v.health} running={running} network={network}/></div></section>
 }

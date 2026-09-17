@@ -40,11 +40,12 @@ test('network readouts correctly convert counters',()=>{
  expect(networkByteRate(null).value).toBe('—');
 })
 test('public token mode retains real RAM and offers the real system panel',()=>{
- const {container}=render(<SystemInstruments publicMode telemetry={data} overview={overview}/>);
+ const {container,rerender}=render(<SystemInstruments publicMode telemetry={data} overview={overview}/>);
  expect(container.querySelectorAll('[data-token-gauge]')).toHaveLength(2);
  expect(screen.getByRole('article',{name:'RAM usage: 71 percent'})).toBeInTheDocument();
  expect(screen.getByLabelText('Monthly tokens: 28,000,000,000')).toBeInTheDocument();
- fireEvent.click(screen.getByRole('button',{name:'System',exact:true}));
+ expect(screen.queryByRole('group',{name:'Metric category'})).not.toBeInTheDocument();
+ rerender(<SystemInstruments telemetry={data} overview={overview}/>);
  expect(container.querySelectorAll('[data-token-gauge]')).toHaveLength(0);
  expect(screen.getByRole('article',{name:'CPU utilization: 62 percent'})).toBeInTheDocument();
  expect(screen.getByText('AMBIENT')).toBeInTheDocument();
@@ -72,7 +73,7 @@ test.each([20,30,31.36,40])('updated template LED boundaries track the reading a
  const x=hi.value===lo.value?lo.x:lo.x+(hi.x-lo.x)*(value-lo.value)/(hi.value-lo.value);
  expect(Number(gauge.dataset.fillX)).toBeCloseTo(x,10);
  const monthly=container.querySelector('[data-meter-fill="monthly"]');
- expect(Number(monthly.getAttribute('width'))/Number(monthly.dataset.extent)).toBeCloseTo(values.tokens.total/40e9,12);
+ expect((Number(monthly.getAttribute('width'))-3)/(Number(monthly.dataset.extent)-3)).toBeCloseTo(values.tokens.total/40e9,12);
  expect(container.querySelectorAll('svg[preserveAspectRatio="none"]')).toHaveLength(0);
  expect(container.textContent.toLowerCase()).not.toContain('simulated');
 });
@@ -81,3 +82,12 @@ test('multiple clusters never share SVG clip or gradient IDs',()=>{
  const {container}=render(<><AmberInstruments values={values} system={false}/><AmberInstruments values={values} system/></>);
  const ids=[...container.querySelectorAll('svg [id]')].map(e=>e.id);expect(new Set(ids).size).toBe(ids.length);
 })
+
+test('updated designer network gauge fills the full profile and odometer shows exact monthly total',()=>{
+ const values={tokens:{tps:30,total:28000001234},cpu:10,memory:20,capacity:5,io:0,temp:45,ambient:null,network:{value:'5',unit:'kB/s'},health:{}};
+ const {container}=render(<AmberInstruments values={values} running/>);
+ const fill=container.querySelector('[data-meter-fill="network"]');
+ expect(Number(fill.getAttribute('width'))).toBe(123.5);
+ expect(container.querySelector('.model-odometer')).toHaveAttribute('aria-label','Qwen4Exp');
+ expect(container.querySelectorAll('.meter-illumination')).toHaveLength(4);
+});

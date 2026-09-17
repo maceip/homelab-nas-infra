@@ -137,3 +137,52 @@
 .lcd-console .receipt-toast{background:linear-gradient(130deg,#204d31,#0a190e);color:#ffdc86;border-color:#618254;outline-color:#102f1c;border-radius:8px}.lcd-console .receipt-toast p,.lcd-console .receipt-toast button{color:#ffdc86!important}
 @media(max-width:700px){.lcd-console .lcd-layout{width:calc(100% - 12px);gap:8px}.lcd-console .lcd-mode-switch button{min-height:30px;padding:0 10px;font-size:10px}.lcd-console .lcd-home{font-size:9px;max-width:100px;text-align:right}.lcd-console .lcd-caption{font-size:8px}.lcd-console .receipt-toast{font-size:12px}}
 @media(prefers-reduced-motion:reduce){.lcd-console *{transition:none!important;animation:none!important}}
+
+/* Designer revision 027335d, imported from maceip-patch-1. */
+/* A single, fluid instrument plate with the molded square grain of the reference. */
+.lcd-console .instrument-cluster{max-width:none;margin:0;--plate-pitch:1.16cqw;background-color:#214b32;background-image:linear-gradient(120deg,#50745122,#102d1e66),repeating-linear-gradient(90deg,#071a134d 0 .075cqw,#7e99722b .075cqw .15cqw,transparent .15cqw var(--plate-pitch)),repeating-linear-gradient(0deg,#061b134d 0 .075cqw,#7e997226 .075cqw .15cqw,transparent .15cqw var(--plate-pitch));border-color:#4b7150;box-shadow:inset 0 .3cqw .35cqw #a5b68c55,inset .25cqw 0 .4cqw #65856166,inset -.35cqw -.6cqw .65cqw #061d12cc,0 .28cqw 0 #061a10,0 .55cqw .3cqw #030e0988,0 1.6cqw 2.5cqw #0006}
+.lcd-console .instrument-cluster:before{opacity:.12;mix-blend-mode:soft-light}
+.lcd-console .glass{border-color:#06170d;box-shadow:0 0 0 .32cqw #0b2115,0 .2cqw .18cqw .43cqw #67836466,inset 0 .65cqw .65cqw #000e,inset .2cqw 0 .4cqw #0008}
+.lcd-console .centre-console{background:linear-gradient(130deg,#31573b,#24442e 70%,#183621);box-shadow:inset 0 .15cqw .15cqw #92a57c55,inset .15cqw 0 .15cqw #77936c33,inset -.18cqw -.3cqw .3cqw #0b2014,0 0 0 .3cqw #102b1b,0 .55cqw .55cqw #0008}
+.lcd-console .ram-window{box-shadow:inset 0 .5cqw .6cqw #000e,inset .15cqw 0 .35cqw #0008,0 .12cqw .15cqw #59764d44}
+.lcd-console .lower-console{border-color:#0a2114;box-shadow:0 -1px #6b866144}
+
+/* Separate curved drums: neighboring characters disappear around each wheel. */
+.lcd-console .model-odometer{height:3cqw;display:flex;gap:.09cqw;padding:.1cqw;background:#020704;border:.08cqw solid #071109;border-radius:.18cqw;box-shadow:inset 0 .25cqw .35cqw #000,0 .09cqw 0 #78906755;overflow:hidden}
+.lcd-console .odometer-wheel{position:relative;flex:1;min-width:0;overflow:hidden;background:linear-gradient(#020804,#172618 22%,#283520 48%,#1b2819 67%,#020603);border-inline:.035cqw solid #40503b44;box-shadow:inset .06cqw 0 .06cqw #93a37a26,inset -.08cqw 0 .1cqw #000a}
+.lcd-console .odometer-wheel.word-gap{flex:.4;background:#060d07;border:0;box-shadow:none}
+.lcd-console .word-gap .drum-strip{visibility:hidden}
+.lcd-console .drum-strip{position:absolute;inset:50% 0 auto;display:flex;flex-direction:column;transform:translateY(calc(-50% + var(--drum-offset)));animation:drum-settle var(--roll-duration) cubic-bezier(.13,.7,.24,1) var(--roll-delay) both}
+.lcd-console .drum-strip>span{flex:none;height:2cqw;display:flex;align-items:center;justify-content:center;font-family:"Courier New",monospace;font-size:1.65cqw;font-weight:700;font-style:italic;line-height:1;color:#eee5b0;text-shadow:0 1px #0c120b,0 0 .12cqw #f9d77155}
+.lcd-console .drum-neighbor{opacity:.65}
+.lcd-console .odometer-wheel:after{content:"";position:absolute;inset:0;pointer-events:none;background:linear-gradient(#010502ed,#02100788 18%,transparent 42%,transparent 58%,#01090288 82%,#000d);box-shadow:inset 0 .1cqw .13cqw #000b,inset 0 -.1cqw .13cqw #000b}
+@keyframes drum-settle{0%{transform:translateY(calc(-50% + 6cqw))}84%{transform:translateY(calc(-50% + var(--drum-offset) - .09cqw))}100%{transform:translateY(calc(-50% + var(--drum-offset)))}}
+.lcd-console .instrument-cluster[data-running=false] .drum-strip{animation-play-state:paused}
+
+/* Warm luminous cores and an amber bloom outside the actual LCD cell outlines. */
+.lcd-console{--amber:#ffd154}
+.lcd-console .digit-on{fill:var(--amber);filter:drop-shadow(0 0 .8px #fff6c7)}
+.lcd-console .digits{filter:drop-shadow(0 0 .065em #ffbc3baa) drop-shadow(0 0 .16em #ffa02766)}
+.lcd-console .rev-cell{transition:opacity 45ms linear;fill:var(--amber)}
+.lcd-console .rev-cell.is-lit{filter:none}
+.lcd-console .rev-illumination{filter:drop-shadow(0 0 1.2px #fff2b9) drop-shadow(0 0 4px #ffc241bf) drop-shadow(0 0 10px #ff9c2659)}
+.lcd-console .rev-scoring{fill:none;stroke:#694c12;stroke-width:1.05;stroke-opacity:.62}
+.lcd-console .meter-lit .meter-block{filter:none}
+.lcd-console .meter-illumination{filter:drop-shadow(0 0 .65px #fff1b3) drop-shadow(0 0 2px #ffc243b3) drop-shadow(0 0 5px #ff9d2966)}
+.lcd-console .meter-rail,.lcd-console .meter-scale{filter:drop-shadow(0 0 .65px #ffed9d) drop-shadow(0 0 2px #ffa62a99)}
+.lcd-console .network .meter-body{opacity:.05}
+.lcd-console .meter-scoring{stroke-width:.7;stroke-opacity:.6}
+.lcd-console .rev-scale-mark{filter:drop-shadow(0 0 1px #ffeeb1) drop-shadow(0 0 3px #ffc13a99)}
+.lcd-console .meter-label,.lcd-console .console-signature{color:var(--amber);text-shadow:0 0 .1cqw #ffe69b80,0 0 .35cqw #ffad3266}
+.lcd-console .ram-window:after{opacity:.45;background:radial-gradient(ellipse at 50% 53%,#ffb62719,transparent 72%)}
+.lcd-console .annunciator.online{box-shadow:inset 0 1px 2px #f0ffc877,0 0 .55cqw #9bbc4555}
+.lcd-console .annunciator.api-lamp{box-shadow:inset 0 1px 2px #b6b4e355,0 0 .45cqw #7772bc44}
+.lcd-console .annunciator.warning-lamp.online{background:#f16c32;color:#853c21;box-shadow:0 0 .55cqw #f46a3566,inset 0 1px 2px #ffcc7577}
+.lcd-console .instrument-cluster[data-phase=power-on] :is(.digits,.meter-illumination,.meter-rail,.meter-scale,.rev-illumination,.rev-scale-mark,.meter-label,.rev-legend){opacity:.12}
+@media(prefers-reduced-motion:reduce){.lcd-console .drum-strip{animation:none;transform:translateY(calc(-50% + var(--drum-offset)))}.lcd-console .rev-cell{transition:none}}
+
+.lcd-console .token-odometer .model-odometer{width:100%;height:2.8cqw}.lcd-console .token-odometer .drum-strip>span{font-size:1.5cqw}
+
+/* The supplied plate stands alone; retain half-screen desktop/mobile docking. */
+.lcd-console .lcd-layout{width:min(calc(100% - 24px),calc((50dvh - 24px)*2.8),1500px);gap:0}
+@media(max-width:700px){.lcd-console .lcd-layout{width:calc(100% - 12px)}}
