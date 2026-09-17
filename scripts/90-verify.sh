@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
+# Confirm SSH, Samba, discovery, File Browser, the RAID mount, PCIe Gen 3.0
+# x1, and (when present) 2.5 GbE full duplex.
 set -euo pipefail
 
-repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
-# shellcheck source=../config/network/interfaces.conf
-source "${repo_dir}/config/network/interfaces.conf"
+# shellcheck source=lib/common.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
+# shellcheck source=../config/network/nics.conf
+source "${REPO_DIR}/config/network/nics.conf"
 
 fail=0
 check() {
@@ -15,6 +18,20 @@ check() {
   fi
 }
 
+# Invoked as `check wifi_ipv6_link_local`.
+# shellcheck disable=SC2317
+wifi_ipv6_link_local() {
+  local name type method
+  while IFS=: read -r name type; do
+    [[ ${type} == "802-11-wireless" ]] || continue
+    method="$(nmcli -g ipv6.method connection show "${name}")"
+    [[ ${method} == "link-local" ]] || return 1
+  done < <(nmcli -t -f NAME,TYPE connection show)
+  return 0
+}
+
+# Invoked as `check verify_filebrowser`.
+# shellcheck disable=SC2317
 verify_filebrowser() {
   local token
   token="$(curl --fail --silent --show-error \
@@ -33,15 +50,23 @@ check systemctl is-active --quiet avahi-daemon.service
 check systemctl is-active --quiet filebrowser.service
 check findmnt --mountpoint /srv/storage
 check test -d /srv/storage/public
-check test "$(cat /sys/bus/pci/devices/0001:01:00.0/current_link_speed)" = "8.0 GT/s PCIe"
-check test "$(cat /sys/bus/pci/devices/0001:01:00.0/current_link_width)" = "1"
-if [[ -e /sys/class/net/eth1/address ]] &&
-  [[ $(< /sys/class/net/eth1/address) == "${USB_25GBE_MAC}" ]]; then
-  check test "$(< /sys/class/net/eth1/speed)" = "2500"
-  check test "$(< /sys/class/net/eth1/duplex)" = "full"
+
+slot="$(jmb585_pci_slot)"
+check test -n "${slot}"
+if [[ -n ${slot} ]]; then
+  check test "$(cat "/sys/bus/pci/devices/${slot}/current_link_speed")" = "8.0 GT/s PCIe"
+  check test "$(cat "/sys/bus/pci/devices/${slot}/current_link_width")" = "1"
 fi
+
+usb_interface="$(interface_for_mac "${USB_25GBE_MAC}" || true)"
+if [[ -n ${usb_interface} ]]; then
+  check test "$(< "/sys/class/net/${usb_interface}/speed")" = "2500"
+  check test "$(< "/sys/class/net/${usb_interface}/duplex")" = "full"
+fi
+
 check smbclient -N -c 'ls' //localhost/Public
 check verify_filebrowser
+check wifi_ipv6_link_local
 check test "$(vcgencmd get_throttled)" = "throttled=0x0"
 
 sudo mdadm --detail /dev/md0

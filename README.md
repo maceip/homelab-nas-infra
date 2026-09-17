@@ -1,21 +1,27 @@
 # homelab-nas-infra
 
-Rebuildable configuration for `homelab-nas`, a Raspberry Pi 5 NAS using a
-Radxa Penta SATA HAT and four SSDs.
+Configuration for `homelab-nas`, a Raspberry Pi 5 NAS with a Radxa Penta
+SATA HAT and four SSDs.
+
+This repository is the configuration for one named Raspberry Pi. Disk serials
+and NIC MAC addresses are included so the storage script can refuse unknown
+disks.
 
 ## Design
 
-- Raspberry Pi OS 64-bit (Debian 13 / Trixie) boots only from microSD.
-- The Radxa HAT runs at PCIe Gen 3 by explicit owner choice.
-- The four SSDs form a maximum-throughput Linux `mdadm` RAID 0 stripe.
-- The stripe is formatted as XFS and mounted at `/srv/storage`.
-- Samba exports `/srv/storage/public` as a writable guest share.
-- File Browser exposes the same directory through a mobile-friendly web UI.
-- Avahi advertises SMB to Apple devices; `wsdd2` advertises it to Windows.
-- The SSD array is never required for boot or SSH. Mount failures use
-  `nofail` and bounded systemd timeouts.
+- Raspberry Pi OS 64-bit (Debian 13 / Trixie) boots from the microSD card only.
+- PCIe Gen 3.0 is enabled on the Raspberry Pi 5 FPC connector. Raspberry Pi
+  does not certify Gen 3.0; the default is Gen 2.0.
+- The four SSDs are an `mdadm` RAID 0 array (no redundancy).
+- The array is XFS, mounted at `/srv/storage`.
+- Samba exports `/srv/storage/public` as a guest-writable share named `Public`.
+- File Browser serves the same directory on TCP port 8080. Command execution
+  is disabled.
+- Avahi publishes SMB for macOS and iOS; `wsdd2` publishes it for Windows.
+- Boot and SSH do not depend on the array. `/etc/fstab` uses `nofail` with
+  `x-systemd.device-timeout=10s` and `x-systemd.mount-timeout=30s`.
 
-RAID 0 has no redundancy. Failure of any member loses the whole array.
+RAID 0 has no redundancy. If any member fails, the array is lost.
 
 ## Apply order
 
@@ -28,37 +34,38 @@ RAID 0 has no redundancy. Failure of any member loses the whole array.
 7. `sudo scripts/80-storage-benchmark.sh`
 8. `scripts/90-verify.sh`
 
-The storage script is intentionally destructive. It accepts only the four
-SSD serial numbers recorded in `config/storage/disks.conf`, and refuses the
-microSD boot device, mounted devices, or disks with an unexpected model.
+`scripts/20-create-raid0.sh` wipes the four SSDs listed in
+`config/storage/disks.conf`. It refuses the microSD boot device, mounted
+devices, and disks whose model is not Samsung SSD 870 QVO 8 TB.
 
-PCIe Gen 3 is the target configuration. Fall back to Gen 2 only after the
-verification and sustained I/O tests identify PCIe, AER, AHCI, or disk-link
-errors attributable to Gen 3.
+PCIe Gen 3.0 is the intended link speed. Use
+`sudo scripts/11-fallback-gen2.sh` only after verification and the storage
+benchmark show PCIe, AER, AHCI, or disk-link errors from Gen 3.0.
+
+`scripts/50-health.sh` prints fan, SMART, PCIe, RAID, and service state.
 
 ## Client access
 
-- Any device with a browser: `http://homelab-nas.local:8080`
-- Mac/iPhone: `smb://homelab-nas.local/Public`
+- Browser: `http://homelab-nas.local:8080`
+- macOS and iOS: `smb://homelab-nas.local/Public`
 - Windows: `\\homelab-nas\Public`
-- Android: use an SMB-capable Files app and connect to
-  `homelab-nas.local`, share `Public`, as guest.
-- Wi-Fi address at initial build: `192.168.0.36`
-- USB 2.5 GbE address at installation: `192.168.0.56`
-- Direct Ethernet fallback: `192.168.100.50`
+- Android: SMB to `homelab-nas.local`, share `Public`, guest
+- Addresses at build: Wi-Fi `192.168.0.36`, USB 2.5 GbE `192.168.0.56`,
+  direct Ethernet `192.168.100.50`
 
-The SMB share and web file manager deliberately permit unauthenticated reads
-and writes to anyone on the local network. Do not expose TCP ports 445 or 8080
-to the Internet.
+The SMB share and File Browser allow unauthenticated read and write for anyone
+on the home LAN (`192.168.0.0/16`). Do not forward TCP 139, 445, or 8080 to
+the public Internet. See [Security](docs/security.md).
 
 ## Recovery
 
-See [docs/RECOVERY.md](docs/RECOVERY.md).
+See [docs/recovery.md](docs/recovery.md).
 
 ## Documentation
 
-- [Architecture](docs/ARCHITECTURE.md)
-- [Operations](docs/OPERATIONS.md)
-- [Recovery](docs/RECOVERY.md)
-- [Fan and performance](docs/FAN-AND-PERFORMANCE.md)
-- [Initial build report](docs/BUILD-REPORT.md)
+- [Architecture](docs/architecture.md)
+- [Operations](docs/operations.md)
+- [Recovery](docs/recovery.md)
+- [Fan and performance](docs/fan-and-performance.md)
+- [Initial build report](docs/build-report.md)
+- [Security](docs/security.md)

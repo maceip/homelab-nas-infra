@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
+# Create mdadm RAID 0 on the four SSDs in config/storage/disks.conf, format
+# XFS, and add a nofail /etc/fstab entry. Refuses unknown or mounted disks.
 set -euo pipefail
 
-if [[ ${EUID} -ne 0 ]]; then
-  exec sudo "$0" "$@"
-fi
+# shellcheck source=lib/common.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
+require_root "$@"
 
-repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=../config/storage/disks.conf
-source "${repo_dir}/config/storage/disks.conf"
+source "${REPO_DIR}/config/storage/disks.conf"
 
 [[ ${#RAID_DISKS[@]} -eq 4 ]] || {
   echo "Refusing: exactly four configured disks are required." >&2
@@ -77,7 +78,7 @@ if [[ -e /dev/md0 ]]; then
     exit 1
   }
   create_array=0
-  echo "Resuming with the validated, unformatted /dev/md0."
+  echo "Using the existing unformatted RAID 0 array on /dev/md0."
 fi
 
 if (( create_array )); then
@@ -85,7 +86,7 @@ if (( create_array )); then
   for device in "${resolved[@]}"; do
     lsblk -dn -o PATH,SIZE,MODEL,SERIAL "${device}"
   done
-  echo "Destroying existing signatures on the four explicitly configured SSDs."
+  echo "Wiping signatures on the four SSDs listed in config/storage/disks.conf."
 
   for device in "${resolved[@]}"; do
     wipefs --all --force "${device}"

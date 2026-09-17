@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
+# Install smb.conf, the Avahi SMB service, and start smbd, nmbd, and wsdd2.
+# Guest access to the Public share. See wiki.samba.org standalone server.
 set -euo pipefail
 
-if [[ ${EUID} -ne 0 ]]; then
-  exec sudo "$0" "$@"
-fi
+# shellcheck source=lib/common.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
+require_root "$@"
 
-repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
 findmnt --mountpoint /srv/storage >/dev/null || {
   echo "Refusing: /srv/storage is not mounted." >&2
   exit 1
@@ -21,19 +22,23 @@ backup_dir="/var/backups/homelab-nas/$(date -u +%Y%m%dT%H%M%SZ)"
 install -d -m 0700 "${backup_dir}"
 [[ ! -f /etc/samba/smb.conf ]] || cp -a /etc/samba/smb.conf "${backup_dir}/smb.conf"
 
-install -m 0644 "${repo_dir}/config/samba/smb.conf" /etc/samba/smb.conf
-install -m 0644 "${repo_dir}/config/avahi/smb.service" \
+install -m 0644 "${REPO_DIR}/config/samba/smb.conf" /etc/samba/smb.conf
+install -m 0644 "${REPO_DIR}/config/avahi/smb.service" \
   /etc/avahi/services/smb.service
+install -d -m 0755 /etc/systemd/system/smbd.service.d
+install -m 0644 "${REPO_DIR}/config/systemd/smbd.service.d/requires-storage.conf" \
+  /etc/systemd/system/smbd.service.d/requires-storage.conf
 testparm -s /etc/samba/smb.conf >/dev/null
 
-# This is a standalone file server, never an Active Directory controller.
+# Standalone file server, not an Active Directory domain controller.
 systemctl disable --now samba-ad-dc.service winbind.service 2>/dev/null || true
 systemctl mask samba-ad-dc.service winbind.service 2>/dev/null || true
+systemctl daemon-reload
 systemctl unmask smbd.service nmbd.service wsdd2.service avahi-daemon.service
 systemctl enable --now smbd.service nmbd.service wsdd2.service avahi-daemon.service
 
 if command -v ufw >/dev/null && ufw status | grep -q '^Status: active'; then
-  ufw allow Samba
+  ufw allow from 192.168.0.0/16 to any app Samba
 fi
 
 echo "Samba guest share configured. Backup: ${backup_dir}"

@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
+# Check power, PCIe link, disks, and kernel messages after the first reboot.
 set -euo pipefail
+
+# shellcheck source=lib/common.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 
 echo "== Power =="
 vcgencmd get_throttled
@@ -7,9 +11,9 @@ vcgencmd get_throttled
 echo "== PCIe =="
 sudo lspci -nnk
 
-controller="$(lspci -Dnn | awk '/JMicron.*JMB585|JMicron.*SATA/ {print $1; exit}')"
+controller="$(jmb585_pci_slot)"
 if [[ -z ${controller} ]]; then
-  echo "JMB585 SATA controller not detected" >&2
+  echo "JMicron JMB585 SATA controller not detected" >&2
   exit 1
 fi
 
@@ -22,4 +26,3 @@ echo "== Kernel errors =="
 if sudo dmesg --color=never | grep -iE 'AER:.*error|I/O error|ata[0-9].*error|pcie.*error|under.?voltage'; then
   exit 1
 fi
-
