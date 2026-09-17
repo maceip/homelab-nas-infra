@@ -18,6 +18,18 @@ check() {
   fi
 }
 
+# Invoked as `check wifi_ipv6_link_local`.
+# shellcheck disable=SC2317
+wifi_ipv6_link_local() {
+  local name type method
+  while IFS=: read -r name type; do
+    [[ ${type} == "802-11-wireless" ]] || continue
+    method="$(nmcli -g ipv6.method connection show "${name}")"
+    [[ ${method} == "link-local" ]] || return 1
+  done < <(nmcli -t -f NAME,TYPE connection show)
+  return 0
+}
+
 # Invoked as `check verify_filebrowser`.
 # shellcheck disable=SC2317
 verify_filebrowser() {
@@ -54,6 +66,7 @@ fi
 
 check smbclient -N -c 'ls' //localhost/Public
 check verify_filebrowser
+check wifi_ipv6_link_local
 check test "$(vcgencmd get_throttled)" = "throttled=0x0"
 
 sudo mdadm --detail /dev/md0

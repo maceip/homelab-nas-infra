@@ -61,16 +61,7 @@ if [[ $(<"/sys/class/net/${builtin_interface}/carrier") == 1 ]]; then
   nmcli --wait 20 connection up homelab-built-in ifname "${builtin_interface}"
 fi
 
-wifi_connection="$(
-  nmcli -t -f NAME,TYPE,DEVICE connection show --active |
-    awk -F: '$2 == "802-11-wireless" && $3 == "wlan0" {print $1; exit}'
-)"
-if [[ -n ${wifi_connection} ]]; then
-  nmcli connection modify "${wifi_connection}" \
-    802-11-wireless.powersave 2 \
-    ipv4.route-metric 600 \
-    ipv6.method link-local
-fi
+lock_wifi_profiles
 
 echo "Network priorities:"
 echo "  USB 2.5 GbE: metric 50 (primary when present)"

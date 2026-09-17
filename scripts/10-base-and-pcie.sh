@@ -38,11 +38,7 @@ systemctl enable fstrim.timer
 systemctl enable smartmontools.service 2>/dev/null || true
 systemctl enable avahi-daemon.service
 
-# Disable Wi-Fi power saving.
-while IFS=: read -r connection _ device; do
-  [[ ${device} == "wlan0" ]] || continue
-  nmcli connection modify "${connection}" 802-11-wireless.powersave 2
-done < <(nmcli -t -f NAME,TYPE,DEVICE connection show --active)
+lock_wifi_profiles
 
 echo "Base system and PCIe configuration applied."
 echo "Recovery copies: ${backup_dir}"

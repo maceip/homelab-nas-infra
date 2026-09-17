@@ -15,9 +15,16 @@ ExecStart=/usr/local/bin/filebrowser \
   --root /srv/storage/public \
   --address 0.0.0.0 \
   --port 8080 \
+  --auth.method noauth \
   --disableExec
 Restart=on-failure
 RestartSec=3s
+
+# Same home-LAN sources as Samba hosts allow. systemd applies this to
+# incoming packets even if the process binds IPv4 and IPv6.
+IPAddressAllow=localhost
+IPAddressAllow=link-local
+IPAddressAllow=192.168.0.0/16
 
 NoNewPrivileges=true
 PrivateTmp=true

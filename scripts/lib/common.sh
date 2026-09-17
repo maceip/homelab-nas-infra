@@ -33,3 +33,15 @@ interface_for_mac() {
 jmb585_pci_slot() {
   lspci -Dnn | awk '/JMicron.*JMB585|JMicron.*SATA/ {print $1; exit}'
 }
+
+# All saved Wi-Fi profiles, not only the active one.
+lock_wifi_profiles() {
+  local name type
+  while IFS=: read -r name type; do
+    [[ ${type} == "802-11-wireless" ]] || continue
+    nmcli connection modify "${name}" \
+      802-11-wireless.powersave 2 \
+      ipv4.route-metric 600 \
+      ipv6.method link-local
+  done < <(nmcli -t -f NAME,TYPE connection show)
+}
