@@ -1,0 +1,424 @@
+import React, { useContext, useEffect, useState } from 'react'
+import PropTypes from 'prop-types'
+
+import { firewallAPI, allowlistAPI } from 'api'
+import { AlertContext, AppContext } from 'AppContext'
+
+import {
+  Button,
+  ButtonText,
+  Checkbox,
+  CheckboxIcon,
+  CheckboxIndicator,
+  CheckboxLabel,
+  CheckboxGroup,
+  FormControl,
+  FormControlHelper,
+  FormControlHelperText,
+  FormControlLabel,
+  FormControlLabelText,
+  HStack,
+  Icon,
+  Input,
+  InputField,
+  Pressable,
+  Switch,
+  Text,
+  VStack,
+  Spinner
+} from '@gluestack-ui/themed'
+
+import { ChevronDownIcon, ChevronRightIcon } from 'lucide-react-native'
+
+import { TagItem, GroupItem } from 'components/TagItem'
+import { GroupMenu, TagMenu } from 'components/TagMenu'
+
+import ProtocolRadio from 'components/Form/ProtocolRadio'
+import InputSelect from 'components/InputSelect'
+import AllowlistPolicyControl from 'components/AllowlistPolicyControl'
+import {
+  normalizeInternetPolicySelection,
+  allowlistPolicyValues,
+  hasAllowlistSourceConflict
+} from 'utils/allowlist'
+
+class AddContainerInterfaceRuleImpl extends React.Component {
+  state = {
+    Disabled: false,
+    RuleName: '',
+    Description: '',
+    SrcIP: '',
+    Interface: '',
+    RouteDst: '',
+    Policies: [],
+    Groups: [],
+    Tags: [],
+    GroupOptions: [],
+    showAdvanced: false,
+    isLoading: false
+  }
+
+  defaultPolicies = ['wan', 'dns', 'lan', 'api', 'lan_upstream', 'disabled']
+  policyNames = {
+    wan: 'Internet Access',
+    dns: 'DNS Resolution',
+    lan: 'Local Network',
+    api: 'API Access',
+    lan_upstream: 'Upstream Private Networks',
+    disabled: 'Disabled'
+  }
+  defaultGroups = []
+  defaultTags = []
+
+  constructor(props) {
+    super(props)
+
+    if (props.item) {
+      this.state = {
+        ...this.state,
+        ...props.item,
+        Policies: props.item.Policies || [],
+        Groups: props.item.Groups || [],
+        Tags: props.item.Tags || []
+      }
+    }
+
+    this.handleChange = this.handleChange.bind(this)
+    this.handleSubmit = this.handleSubmit.bind(this)
+  }
+
+  handleChange(name, value) {
+    if (name == 'Interface') {
+      let ifaceIdx = this.props.interfaceList.indexOf(value)
+      if (ifaceIdx > -1) {
+        this.setState({ SrcIP: this.props.netBlocks[ifaceIdx] })
+      }
+    }
+    this.setState({ [name]: value })
+  }
+
+  handleSubmit(event) {
+    event.preventDefault()
+
+    let crule = {
+      RuleName: this.state.RuleName,
+      Description: this.state.Description,
+      Disabled: this.state.Disabled,
+      SrcIP: this.state.SrcIP,
+      RouteDst: this.state.RouteDst,
+      Interface: this.state.Interface,
+      Policies: this.state.Policies,
+      Groups: this.state.Groups,
+      Tags: this.state.Tags
+    }
+
+    this.setState({ isLoading: true })
+
+    const done = (res) => {
+      if (this.props.notifyChange) {
+        this.props.notifyChange('custom_interface')
+      }
+      this.setState({ isLoading: false })
+    }
+
+    const fail = (err) => {
+      this.props.alertContext.error('Firewall API Failure', err)
+      this.setState({ isLoading: false })
+    }
+
+    if (this.props.item) {
+      firewallAPI
+        .deleteCustomInterfaceRule(this.props.item)
+        .then(() =>
+          firewallAPI
+            .addCustomInterfaceRule(crule)
+            .then(done)
+            .catch((err) => {
+              firewallAPI
+                .addCustomInterfaceRule(this.props.item)
+                .catch(() => {})
+              fail(err)
+            })
+        )
+        .catch(fail)
+    } else {
+      firewallAPI.addCustomInterfaceRule(crule).then(done).catch(fail)
+    }
+  }
+
+  componentDidMount() {
+    this.props.appContext.getGroups().then((groups) => {
+      this.handleChange('GroupOptions', groups) //groups.map(x => ({label: x, value: x})))
+    })
+  }
+
+  handlePolicies = (policies) => {
+    this.handleChange(
+      'Policies',
+      normalizeInternetPolicySelection(policies, this.state.Policies)
+    )
+  }
+
+  handleGroups = (groups) => {
+    this.handleChange('Groups', groups)
+  }
+
+  handleTags = (tags) => {
+    this.handleChange('Tags', tags)
+  }
+
+  render() {
+    let interfaceOptions = this.props.interfaceList.map((n) => {
+      return { label: n, value: n }
+    })
+    const allowlistSourceConflict = hasAllowlistSourceConflict({
+      rules: this.props.existingRules,
+      currentRule: this.props.item,
+      interfaceName: this.state.Interface,
+      source: this.state.SrcIP,
+      policies: this.state.Policies
+    })
+    return (
+      <VStack space="md">
+        <Text color="$muted500" size="sm">
+          Give a container or custom network interface access to your SPR
+          network. Set its interface and address range, then choose what it can
+          reach.
+        </Text>
+
+        <FormControl isRequired>
+          <FormControlLabel>
+            <FormControlLabelText>Interface</FormControlLabelText>
+          </FormControlLabel>
+          <InputSelect
+            variant="underlined"
+            value={this.state.Interface}
+            options={interfaceOptions}
+            onChangeText={(value) => this.handleChange('Interface', value)}
+            onChange={(value) => this.handleChange('Interface', value)}
+          />
+          <FormControlHelper>
+            <FormControlHelperText>
+              Interface name (type one if not in the list)
+            </FormControlHelperText>
+          </FormControlHelper>
+        </FormControl>
+
+        <FormControl isRequired>
+          <FormControlLabel>
+            <FormControlLabelText>Container Address Range</FormControlLabelText>
+          </FormControlLabel>
+          <Input size="md" variant="underlined">
+            <InputField
+              autoComplete="off"
+              variant="underlined"
+              placeholder="e.g. 10.0.0.0/24"
+              value={this.state.SrcIP}
+              onChangeText={(value) => this.handleChange('SrcIP', value)}
+            />
+          </Input>
+          <FormControlHelper>
+            <FormControlHelperText>
+              The IP or CIDR range used by this container/interface (e.g.
+              10.0.0.0/24).
+            </FormControlHelperText>
+          </FormControlHelper>
+        </FormControl>
+
+        <FormControl>
+          <FormControlLabel>
+            <FormControlLabelText>
+              Network Policies, Groups, & Tags
+            </FormControlLabelText>
+          </FormControlLabel>
+          <HStack flexWrap="wrap" w="$full" space="md">
+            <HStack space="md" flexWrap="wrap" alignItems="center">
+              {this.state.Groups.map((group) => (
+                <GroupItem key={group} name={group} size="sm" />
+              ))}
+            </HStack>
+            <HStack space="md" flexWrap="wrap" alignItems="center">
+              {this.state.Tags.map((tag) => (
+                <TagItem key={tag} name={tag} size="sm" />
+              ))}
+            </HStack>
+          </HStack>
+          <VStack space="sm">
+            <CheckboxGroup
+              value={this.state.Policies}
+              accessibilityLabel="Set Container Policies"
+              onChange={this.handlePolicies}
+              py="$1"
+            >
+              <HStack space="md" w="$full" flexWrap="wrap">
+                {this.defaultPolicies.map((policy) => (
+                  <Checkbox key={policy} value={policy} colorScheme="primary">
+                    <CheckboxIndicator mr="$2">
+                      <CheckboxIcon />
+                    </CheckboxIndicator>
+                    <CheckboxLabel>{this.policyNames[policy]}</CheckboxLabel>
+                  </Checkbox>
+                ))}
+              </HStack>
+            </CheckboxGroup>
+            <AllowlistPolicyControl
+              policies={this.state.Policies}
+              allowlistPolicies={this.props.allowlistPolicies}
+              onChange={this.handlePolicies}
+            />
+          </VStack>
+          <HStack space="md" flexWrap="wrap" alignItems="center">
+            <GroupMenu
+              items={[
+                ...new Set(this.defaultGroups.concat(this.state.GroupOptions))
+              ]}
+              selectedKeys={this.state.Groups}
+              onSelectionChange={this.handleGroups}
+            />
+
+            <TagMenu
+              items={[
+                ...new Set([
+                  ...(this.defaultTags || []),
+                  ...(this.state.Tags || [])
+                ])
+              ]}
+              selectedKeys={this.state.Tags}
+              onSelectionChange={this.handleTags}
+            />
+          </HStack>
+
+          {allowlistSourceConflict ? (
+            <Text color="$warning600" size="sm">
+              This address is already used by another rule. Its policies can
+              bypass the Whitelist.
+            </Text>
+          ) : null}
+
+          <FormControlHelper>
+            <FormControlHelperText>
+              Choose what this interface can reach. Add DNS if it needs name
+              resolution.
+            </FormControlHelperText>
+          </FormControlHelper>
+        </FormControl>
+
+        <Pressable
+          onPress={() =>
+            this.setState({ showAdvanced: !this.state.showAdvanced })
+          }
+        >
+          <HStack space="sm" alignItems="center" py="$1">
+            <Icon
+              as={this.state.showAdvanced ? ChevronDownIcon : ChevronRightIcon}
+              size="sm"
+              color="$muted500"
+            />
+            <Text color="$muted500" size="sm">
+              Advanced
+            </Text>
+          </HStack>
+        </Pressable>
+
+        {this.state.showAdvanced ? (
+          <FormControl>
+            <FormControlLabel>
+              <FormControlLabelText>Set Route Destination</FormControlLabelText>
+            </FormControlLabel>
+            <Input size="md" variant="underlined">
+              <InputField
+                autoComplete="off"
+                variant="underlined"
+                value={this.state.RouteDst}
+                onChangeText={(value) => this.handleChange('RouteDst', value)}
+              />
+            </Input>
+            <FormControlHelper>
+              <FormControlHelperText>
+                Optional: send this interface's traffic to a specific gateway
+                IP. Leave blank for default routing.
+              </FormControlHelperText>
+            </FormControlHelper>
+          </FormControl>
+        ) : null}
+
+        <FormControl>
+          <FormControlLabel>
+            <FormControlLabelText>Rule Name</FormControlLabelText>
+          </FormControlLabel>
+          <Input size="md" variant="underlined">
+            <InputField
+              autoComplete="off"
+              variant="underlined"
+              placeholder="e.g. media-server access"
+              value={this.state.RuleName}
+              onChangeText={(value) => this.handleChange('RuleName', value)}
+            />
+          </Input>
+          <FormControlHelper>
+            <FormControlHelperText>
+              A label to recognize this rule later.
+            </FormControlHelperText>
+          </FormControlHelper>
+        </FormControl>
+
+        <FormControl>
+          <FormControlLabel>
+            <FormControlLabelText>Description</FormControlLabelText>
+          </FormControlLabel>
+          <Input size="md" variant="underlined">
+            <InputField
+              autoComplete="off"
+              placeholder="Optional label"
+              value={this.state.Description}
+              onChangeText={(value) => this.handleChange('Description', value)}
+            />
+          </Input>
+        </FormControl>
+
+        <Button
+          action="primary"
+          size="md"
+          onPress={this.handleSubmit}
+          isDisabled={this.state.isLoading}
+        >
+          {this.state.isLoading ? (
+            <Spinner color="white" size="small" />
+          ) : (
+            <ButtonText>Save</ButtonText>
+          )}
+        </Button>
+      </VStack>
+    )
+  }
+}
+
+AddContainerInterfaceRuleImpl.propTypes = {
+  notifyChange: PropTypes.func,
+  existingRules: PropTypes.array
+}
+
+export default function AddContainerInterfaceRule(props) {
+  let alertContext = useContext(AlertContext)
+  const [allowlistPolicies, setAllowlistPolicies] = useState([])
+
+  useEffect(() => {
+    allowlistAPI
+      .config()
+      .then((config) => setAllowlistPolicies(allowlistPolicyValues(config)))
+      .catch(() => setAllowlistPolicies([]))
+  }, [])
+
+  return (
+    <AddContainerInterfaceRuleImpl
+      notifyChange={props.notifyChange}
+      alertContext={alertContext}
+      appContext={props.appContext}
+      interfaceList={props.interfaceList}
+      netBlocks={props.netBlocks}
+      item={props.item}
+      existingRules={props.existingRules}
+      allowlistPolicies={allowlistPolicies}
+    ></AddContainerInterfaceRuleImpl>
+  )
+}

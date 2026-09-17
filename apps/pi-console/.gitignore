@@ -1,0 +1,14 @@
+frontend/node_modules/
+frontend/build/
+frontend/.yarn/install-state.gz
+**/__pycache__/
+tests/*-results.json
+tests/*.log
+
+# Local test output and runtime state are never source artifacts.
+tests/results.json
+*.sqlite
+*.sqlite3
+*.db
+.env.local
+.env.*.local

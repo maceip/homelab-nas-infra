@@ -1,0 +1,26 @@
+[Unit]
+Description=Bounded write-only public upload inbox
+After=network.target
+[Service]
+User=pi-upload
+Group=pi-inbox
+EnvironmentFile=/etc/pi-gateway/upload-secret.env
+ExecStart=/usr/bin/python3 /opt/pi-console/current/server/upload_server.py
+StateDirectory=pi-upload
+StateDirectoryMode=0750
+UMask=0027
+Restart=on-failure
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+InaccessiblePaths=/srv/storage -/run/docker.sock
+ReadWritePaths=/var/lib/pi-upload
+PrivateTmp=yes
+PrivateDevices=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_UNIX
+CPUQuota=50%
+MemoryMax=96M
+TasksMax=32
+[Install]
+WantedBy=multi-user.target

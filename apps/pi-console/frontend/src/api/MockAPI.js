@@ -1,0 +1,5137 @@
+import { createServer, Model, Response } from 'miragejs'
+import { Base64 } from 'utils'
+
+import {
+  authFail,
+  dropPrivate,
+  macViolation,
+  nftDrop,
+  wifiAuthFail
+} from 'api/mock/alertbucket'
+
+import * as jsonpath from 'jsonpath'
+
+let server = null
+let opts = {}
+
+// Stop intercepting network traffic when the app leaves mock mode. MirageJS
+// patches global fetch/XHR on createServer, so without this a session that
+// ever used the "mock" hostname can no longer reach a real router.
+export const shutdownMockAPI = () => {
+  if (server) {
+    try {
+      server.shutdown()
+    } catch (e) {}
+    server = null
+  }
+}
+
+const MODEL_ARTIFACT_HOSTS = new Set([
+  'huggingface.co',
+  'raw.githubusercontent.com'
+])
+
+const installModelArtifactFetch = (mockServer) => {
+  if (typeof window === 'undefined' || !mockServer?.pretender) return
+
+  const nativeFetch = mockServer.pretender._nativefetch
+  const mirageFetch = window.fetch
+  if (!nativeFetch || !mirageFetch || mirageFetch.__sprModelArtifactFetch)
+    return
+
+  const artifactFetch = (input, init) => {
+    const requestURL =
+      typeof input === 'string' || input instanceof URL ? input : input?.url
+    try {
+      const hostname = new URL(requestURL, window.location.href).hostname
+      if (MODEL_ARTIFACT_HOSTS.has(hostname)) {
+        return nativeFetch.call(window, input, init)
+      }
+    } catch (error) {
+      // Let Mirage handle malformed or relative requests as it did previously.
+    }
+    return mirageFetch.call(window, input, init)
+  }
+  artifactFetch.__sprModelArtifactFetch = true
+  window.fetch = artifactFetch
+}
+
+// helper function for random and random value in array
+const r = (n) => parseInt(Math.random() * n)
+const rpick = (l) => l[parseInt(r(l.length))]
+
+let mockCustomFingerprints = []
+let mockPlusToken = ''
+let mockDbBuckets = {}
+let mockAlertRules = null
+const mockAlertItems = (bucket, items, filter) => {
+  const updated = items.map(
+    (item) =>
+      mockDbBuckets[`${bucket}/timekey:${item.time}`] || item
+  )
+  return filter ? jsonpath.query(updated, filter) : updated
+}
+let mockPersonas = [
+  {
+    Name: 'gamer',
+    Tag: 'persona:gamer',
+    Description: 'Game consoles and gaming PCs',
+    DailyLimitMinutes: 240,
+    Schedules: [
+      { Days: [1, 1, 1, 1, 1, 1, 1], Start: '00:00', End: '06:00' }
+    ],
+    Disabled: false
+  },
+  {
+    Name: 'kids',
+    Tag: 'persona:kids',
+    Description: "Kids' phones and tablets",
+    DailyLimitMinutes: 120,
+    Schedules: [
+      { Days: [0, 1, 1, 1, 1, 1, 0], Start: '21:00', End: '07:00' }
+    ],
+    DNSFamily: true,
+    Disabled: false
+  }
+]
+let mockPersonasState = {
+  UsedMinutes: { 'persona:gamer': 57, 'persona:kids': 120 },
+  PauseUntil: {},
+  GrantUntil: {}
+}
+
+let mockTrafficInsightsConfig = { Enabled: true, RetentionDays: 7 }
+let mockFeatureFlags = ['rustap']
+const mockSupportedFeatureFlags = ['rustap', 'webllm']
+let mockRustapRadioConfig = {
+  backend: 'rustap',
+  iface: 'wlan1',
+  ssid: 'TestLab',
+  country: 'US',
+  channel: 36,
+  width: 80,
+  band: 5,
+  phy: 'be',
+  wmm: true,
+  per_sta_vif: true,
+  mld: true,
+  link_id: 0,
+  mld_links: [
+    {
+      link_id: 0,
+      mac: '02:00:00:00:10:00',
+      band: 5,
+      channel: 36,
+      width: 80
+    },
+    {
+      link_id: 1,
+      mac: '02:00:00:00:10:01',
+      band: 6,
+      channel: 37,
+      width: 160
+    }
+  ]
+}
+
+let mockGeoBlockConfig = {
+  Enabled: false,
+  DenyCountries: ['AR'],
+  DenyASNs: [{ ASN: 13335, Name: 'CLOUDFLARENET, US' }],
+  Lists: [
+    {
+      URI: 'https://www.spamhaus.org/drop/asndrop.json',
+      Enabled: false,
+      Note: 'Spamhaus ASN-DROP'
+    }
+  ],
+  RefreshSeconds: 86400
+}
+
+let mockAllowlistConfig = {
+  Allowlists: [
+    {
+      Name: 'work-services',
+      CIDRs: ['203.0.113.0/24'],
+      ASNs: [{ ASN: 54113, Name: 'FASTLY, US' }],
+      Domains: ['github.com', '*.githubusercontent.com']
+    }
+  ],
+  RefreshSeconds: 300
+}
+
+const mockASNTable = [
+  { ASN: 7922, Name: 'COMCAST-7922, US', Country: 'US', RangeCount: 1234 },
+  { ASN: 15169, Name: 'GOOGLE, US', Country: 'US', RangeCount: 981 },
+  { ASN: 16509, Name: 'AMAZON-02, US', Country: 'US', RangeCount: 3122 },
+  { ASN: 13335, Name: 'CLOUDFLARENET, US', Country: 'US', RangeCount: 1685 },
+  { ASN: 54113, Name: 'FASTLY, US', Country: 'US', RangeCount: 402 },
+  { ASN: 2906, Name: 'AS-SSI, US', Country: 'US', RangeCount: 168 },
+  { ASN: 3320, Name: 'DTAG, DE', Country: 'DE', RangeCount: 4230 },
+  {
+    ASN: 8075,
+    Name: 'MICROSOFT-CORP-MSN-AS-BLOCK, US',
+    Country: 'US',
+    RangeCount: 2874
+  },
+  { ASN: 32934, Name: 'FACEBOOK, US', Country: 'US', RangeCount: 310 },
+  { ASN: 24940, Name: 'HETZNER-AS, DE', Country: 'DE', RangeCount: 512 },
+  { ASN: 7303, Name: 'Telecom Argentina S.A., AR', Country: 'AR', RangeCount: 890 }
+]
+const mockDefaultFingerprints = [
+    { SignalType: 'hostname', Pattern: '^(ring|ring-|ringdoorbell|ringchime)', Vendor: 'Ring', Category: 'camera', Weight: 5, Decisive: true },
+    { SignalType: 'mdns_service', Pattern: '_ipp\\._tcp|_ipps\\._tcp|_printer\\._tcp', Category: 'printer', Weight: 5, Decisive: true },
+    { SignalType: 'mdns_service', Pattern: '_googlecast\\._tcp|_airplay\\._tcp', Category: 'tv', Weight: 4, Decisive: true },
+    { SignalType: 'mac_vendor', Pattern: 'Espressif|Tuya|Shelly', Category: 'iot-sensor', Weight: 2 },
+    { SignalType: 'oui', Pattern: '^b8:27:eb', Vendor: 'Raspberry Pi', Category: 'iot-sensor', Weight: 3 },
+    { SignalType: 'ssdp', Pattern: 'MediaRenderer|Roku|SmartTV', Category: 'tv', Weight: 4, Decisive: true }
+]
+let mockBuiltinFingerprints = {
+  Overridden: false,
+  Rules: mockDefaultFingerprints
+}
+
+let mockTopoNodes = [
+  { ID: 'router', Kind: 'router', Name: 'SPR', Online: true },
+  { ID: 'iface:eth0', Kind: 'uplink', Name: 'eth0', Iface: 'eth0', Online: true },
+  {
+    ID: 'iface:wlan1',
+    Kind: 'ap_radio',
+    Name: 'wlan1',
+    Iface: 'wlan1',
+    SSID: 'TestLab',
+    Radio: { Channel: 36, Freq: 5180, Modes: ['n', 'ac', 'ax'], Stations: 3 },
+    Online: true
+  },
+  { ID: 'iface:wg0', Kind: 'vpn', Name: 'wg0', Iface: 'wg0', Online: true },
+  { ID: 'iface:eth1', Kind: 'port', Name: 'eth1', Iface: 'eth1', Online: true },
+  {
+    ID: 'spr:192.168.2.50',
+    Kind: 'leaf_router',
+    Name: 'SPR Leaf',
+    IP: '192.168.2.50',
+    Online: true
+  },
+  {
+    ID: 'spr:192.168.2.50:iface:wlan0',
+    Kind: 'ap_radio',
+    Name: 'wlan0',
+    Iface: 'wlan0',
+    SSID: 'TestLab',
+    Radio: { Channel: 1, Freq: 2412, Modes: ['n', 'ax'], Stations: 1 },
+    Online: true
+  },
+  {
+    ID: 'endpoint:cloud-backup',
+    Kind: 'endpoint',
+    Name: 'cloud-backup',
+    IP: '34.120.10.5:443',
+    Tags: ['backup'],
+    Online: true
+  },
+  {
+    ID: 'dev:11:11:11:11:11:11',
+    Kind: 'device',
+    Name: 'Laptop',
+    MAC: '11:11:11:11:11:11',
+    IP: '192.168.2.101',
+    TinyNet: '192.168.2.100/30',
+    VLANTag: '4096',
+    ConnType: 'wifi',
+    Iface: 'wlan1',
+    Groups: ['work'],
+    Policies: ['wan', 'lan'],
+    Tags: ['trusted'],
+    Signal: { RSSI: -54, TxRate: 540, RxRate: 360, Caps: ['HT', 'VHT', 'HE'] },
+    DHCPFirstTime: new Date(Date.now() - 45 * 24 * 3600e3).toISOString(),
+    DHCPLastTime: new Date(Date.now() - 2 * 3600e3).toISOString(),
+    Online: true,
+    Style: { Icon: 'Laptop', Color: '#14925f' }
+  },
+  {
+    ID: 'dev:22:22:22:22:22:22',
+    Kind: 'device',
+    Name: 'Printer',
+    MAC: '22:22:22:22:22:22',
+    IP: '192.168.2.105',
+    TinyNet: '192.168.2.104/30',
+    ConnType: 'wired',
+    Iface: 'eth1',
+    Groups: [],
+    Policies: [],
+    Tags: ['backup'],
+    DHCPFirstTime: new Date(Date.now() - 300 * 24 * 3600e3).toISOString(),
+    DHCPLastTime: new Date(Date.now() - 26 * 3600e3).toISOString(),
+    Online: true,
+    Style: { Icon: 'Printer', Color: '#2563eb' }
+  },
+  {
+    ID: 'dev:33:33:33:33:33:33',
+    Kind: 'device',
+    Name: 'Camera',
+    MAC: '33:33:33:33:33:33',
+    IP: '192.168.2.109',
+    TinyNet: '192.168.2.108/30',
+    ConnType: 'offline',
+    Groups: ['iot'],
+    Policies: ['quarantine'],
+    Tags: ['porch'],
+    Online: false,
+    Isolated: true,
+    Style: { Icon: 'Video', Color: '#dc2626' }
+  },
+  {
+    ID: 'dev:55:55:55:55:55:55',
+    Kind: 'device',
+    Name: 'Phone',
+    MAC: '55:55:55:55:55:55',
+    IP: '10.8.0.2',
+    TinyNet: '10.8.0.0/30',
+    ConnType: 'wireguard',
+    Iface: 'wg0',
+    Groups: ['work'],
+    Policies: ['wan'],
+    Tags: ['mobile'],
+    Online: true,
+    Style: { Icon: 'Mobile', Color: '#7c3aed' }
+  },
+  {
+    ID: 'dev:66:66:66:66:66:66',
+    Kind: 'device',
+    Name: 'game-desktop',
+    MAC: '66:66:66:66:66:66',
+    IP: '192.168.2.117',
+    TinyNet: '192.168.2.116/30',
+    ConnType: 'wired',
+    Iface: 'eth1',
+    Groups: ['gaming'],
+    Policies: ['wan'],
+    Online: true,
+    Style: { Icon: 'Desktop', Color: '#16a34a' }
+  },
+  {
+    ID: 'dev:77:77:77:77:77:77',
+    Kind: 'device',
+    Name: 'xbox',
+    MAC: '77:77:77:77:77:77',
+    IP: '192.168.2.121',
+    TinyNet: '192.168.2.120/30',
+    ConnType: 'wifi',
+    Iface: 'wlan1',
+    Groups: ['gaming'],
+    Policies: ['wan'],
+    Signal: { RSSI: -62, TxRate: 390, RxRate: 300, Caps: ['HT', 'VHT'] },
+    Online: true,
+    Style: { Icon: 'Gamepad', Color: '#107c10' }
+  },
+  {
+    ID: 'dev:88:88:88:88:88:88',
+    Kind: 'device',
+    Name: 'playstation',
+    MAC: '88:88:88:88:88:88',
+    IP: '192.168.2.125',
+    TinyNet: '192.168.2.124/30',
+    ConnType: 'wifi',
+    Iface: 'wlan1',
+    Groups: ['gaming'],
+    Policies: ['wan'],
+    Signal: { RSSI: -71, TxRate: 180, RxRate: 120, Caps: ['HT', 'VHT'] },
+    Online: true,
+    Style: { Icon: 'Gamepad', Color: '#0070d1' }
+  },
+  {
+    ID: 'dev:44:44:44:44:44:44',
+    Kind: 'device',
+    Name: 'Tablet',
+    MAC: '44:44:44:44:44:44',
+    IP: '192.168.2.113',
+    TinyNet: '192.168.2.112/30',
+    ConnType: 'wifi',
+    Iface: 'wlan0.4098',
+    Groups: ['work'],
+    Policies: ['wan'],
+    Signal: { RSSI: -66, TxRate: 240, RxRate: 180, Caps: ['HT', 'HE'] },
+    Online: true,
+    Style: { Icon: 'Tablet', Color: '#0891b2' }
+  },
+  {
+    ID: 'dev:99:99:99:99:99:99',
+    Kind: 'device',
+    Name: 'Work laptop',
+    MAC: '99:99:99:99:99:99',
+    IP: '192.168.2.129',
+    TinyNet: '192.168.2.128/30',
+    VLANTag: '4103',
+    ConnType: 'wifi',
+    Iface: 'wlan1',
+    Groups: ['warp'],
+    Policies: ['dns'],
+    Tags: [],
+    Signal: { RSSI: -58, TxRate: 480, RxRate: 360, Caps: ['HT', 'VHT', 'HE'] },
+    DHCPFirstTime: new Date(Date.now() - 12 * 24 * 3600e3).toISOString(),
+    DHCPLastTime: new Date(Date.now() - 45 * 60e3).toISOString(),
+    Online: true,
+    Style: { Icon: 'Laptop', Color: '#2563eb' }
+  },
+  {
+    ID: 'plugin:tailscale',
+    Kind: 'extension',
+    Name: 'TAILSCALE',
+    ConnType: 'wireguard',
+    Online: true
+  },
+  {
+    ID: 'plugin:tailscale:ts-laptop',
+    Kind: 'device',
+    Name: 'ts-laptop',
+    IP: '100.64.0.2',
+    ConnType: 'wireguard',
+    Online: true
+  },
+  {
+    ID: 'plugin:tailscale:ts-phone',
+    Kind: 'device',
+    Name: 'ts-phone',
+    IP: '100.64.0.3',
+    ConnType: 'wireguard',
+    Online: true
+  },
+  {
+    ID: 'plugin:tailscale:ts-exit',
+    Kind: 'device',
+    Name: 'exit-node',
+    IP: '100.64.0.9',
+    ConnType: 'wireguard',
+    Online: false
+  },
+  {
+    ID: 'plugin:nebula',
+    Kind: 'extension',
+    Name: 'NEBULA',
+    ConnType: 'wireguard',
+    Online: true
+  },
+  {
+    ID: 'plugin:gluetun',
+    Kind: 'extension',
+    Name: 'GLUETUN',
+    ConnType: 'wireguard',
+    Online: true
+  },
+  {
+    ID: 'plugin:usque',
+    Kind: 'extension',
+    Name: 'USQUE',
+    ConnType: 'wired',
+    Online: true
+  },
+  {
+    ID: 'plugin:usque:sink:warp',
+    Kind: 'sink',
+    Name: 'Cloudflare WARP',
+    IP: '172.30.118.2',
+    Iface: 'spr-usque',
+    Online: true
+  },
+  {
+    ID: 'plugin:reticulum',
+    Kind: 'extension',
+    Name: 'RETICULUM',
+    ConnType: 'wireguard',
+    Online: true
+  }
+]
+
+const mockTopoL1Edges = [
+  { From: 'router', To: 'iface:eth0', Layer: 'l1', Kind: 'uplink' },
+  { From: 'router', To: 'plugin:nebula', Layer: 'l1', Kind: 'wireguard' },
+  { From: 'router', To: 'plugin:gluetun', Layer: 'l1', Kind: 'wireguard' },
+  { From: 'router', To: 'plugin:usque', Layer: 'l1', Kind: 'wired' },
+  {
+    From: 'plugin:usque',
+    To: 'plugin:usque:sink:warp',
+    Layer: 'l1',
+    Kind: 'wired'
+  },
+  { From: 'router', To: 'plugin:reticulum', Layer: 'l1', Kind: 'wireguard' },
+  { From: 'router', To: 'iface:wlan1', Layer: 'l1', Kind: 'wifi' },
+  { From: 'router', To: 'iface:wg0', Layer: 'l1', Kind: 'wg' },
+  { From: 'router', To: 'iface:eth1', Layer: 'l1', Kind: 'wired' },
+  {
+    From: 'dev:11:11:11:11:11:11',
+    To: 'iface:wlan1',
+    Layer: 'l1',
+    Kind: 'wifi',
+    Metric: -54
+  },
+  { From: 'dev:22:22:22:22:22:22', To: 'iface:eth1', Layer: 'l1', Kind: 'wired' },
+  { From: 'dev:55:55:55:55:55:55', To: 'iface:wg0', Layer: 'l1', Kind: 'wg' },
+  { From: 'iface:eth1', To: 'spr:192.168.2.50', Layer: 'l1', Kind: 'wired' },
+  {
+    From: 'spr:192.168.2.50',
+    To: 'spr:192.168.2.50:iface:wlan0',
+    Layer: 'l1',
+    Kind: 'wifi'
+  },
+  {
+    From: 'dev:44:44:44:44:44:44',
+    To: 'spr:192.168.2.50:iface:wlan0',
+    Layer: 'l1',
+    Kind: 'wifi',
+    Metric: -66
+  },
+  {
+    From: 'dev:99:99:99:99:99:99',
+    To: 'iface:wlan1',
+    Layer: 'l1',
+    Kind: 'wifi',
+    Metric: -58
+  },
+  { From: 'dev:66:66:66:66:66:66', To: 'iface:eth1', Layer: 'l1', Kind: 'wired' },
+  {
+    From: 'dev:77:77:77:77:77:77',
+    To: 'iface:wlan1',
+    Layer: 'l1',
+    Kind: 'wifi',
+    Metric: -62
+  },
+  {
+    From: 'dev:88:88:88:88:88:88',
+    To: 'iface:wlan1',
+    Layer: 'l1',
+    Kind: 'wifi',
+    Metric: -71
+  },
+  { From: 'router', To: 'plugin:tailscale', Layer: 'l1', Kind: 'wireguard' },
+  {
+    From: 'plugin:tailscale',
+    To: 'plugin:tailscale:ts-laptop',
+    Layer: 'l1',
+    Kind: 'wireguard'
+  },
+  {
+    From: 'plugin:tailscale',
+    To: 'plugin:tailscale:ts-phone',
+    Layer: 'l1',
+    Kind: 'wireguard'
+  },
+  {
+    From: 'plugin:tailscale',
+    To: 'plugin:tailscale:ts-exit',
+    Layer: 'l1',
+    Kind: 'wireguard'
+  }
+]
+
+//set localStorage 'mock-topo-scale' to N to demo the layout with N extra devices
+const topoScale = (() => {
+  try {
+    return parseInt(globalThis.localStorage?.getItem('mock-topo-scale')) || 0
+  } catch (e) {
+    return 0
+  }
+})()
+
+if (topoScale > 0) {
+  const pad = (n) => String(n).padStart(2, '0')
+  for (let i = 0; i < topoScale; i++) {
+    const mac = `aa:bb:cc:dd:${pad(Math.floor(i / 100))}:${pad(i % 100)}`
+    const wifi = i % 2 == 0
+    const online = i % 5 != 4
+    const id = 'dev:' + mac
+    mockTopoNodes.push({
+      ID: id,
+      Kind: 'device',
+      Name: 'device-' + i,
+      MAC: mac,
+      IP: '192.168.5.' + (i + 2),
+      ConnType: online ? (wifi ? 'wifi' : 'wired') : 'offline',
+      Iface: wifi ? 'wlan1' : 'eth1',
+      Groups: ['lanparty'],
+      Policies: ['wan', 'lan'],
+      Signal:
+        online && wifi
+          ? { RSSI: -50 - (i % 40), TxRate: 300, RxRate: 200, Caps: ['HT', 'VHT'] }
+          : undefined,
+      Online: online,
+      Style: { Icon: 'Laptop', Color: '#2563eb' }
+    })
+    if (online) {
+      mockTopoL1Edges.push({
+        From: id,
+        To: wifi ? 'iface:wlan1' : 'iface:eth1',
+        Layer: 'l1',
+        Kind: wifi ? 'wifi' : 'wired',
+        Metric: wifi ? -55 : 0
+      })
+    }
+  }
+}
+
+const mockTopoPolicyEdges = () => {
+  const isolated = (node) =>
+    node.Isolated ||
+    node.Policies?.includes('quarantine') ||
+    node.Policies?.includes('disabled')
+  const devices = mockTopoNodes.filter(
+    (node) => node.Kind == 'device' && !isolated(node)
+  )
+  const endpoints = mockTopoNodes.filter((node) => node.Kind == 'endpoint')
+  const edges = []
+
+  let groups = {}
+  for (let device of devices) {
+    for (let group of device.Groups || []) {
+      groups[group] = [...(groups[group] || []), device.ID]
+    }
+    if (device.Policies?.includes('wan')) {
+      edges.push({
+        From: device.ID,
+        To: 'iface:eth0',
+        Layer: 'policy',
+        Kind: 'policy:wan'
+      })
+    }
+  }
+
+  for (let [group, ids] of Object.entries(groups)) {
+    ids.sort()
+    for (let i = 0; i < ids.length; i++) {
+      for (let j = i + 1; j < ids.length; j++) {
+        edges.push({
+          From: ids[i],
+          To: ids[j],
+          Layer: 'policy',
+          Kind: 'group:' + group,
+          Bidir: true
+        })
+      }
+    }
+  }
+
+  const lanDevices = devices.filter((device) => device.Policies?.includes('lan'))
+  for (let from of lanDevices) {
+    for (let to of devices) {
+      if (to.ID == from.ID) continue
+      if (to.Policies?.includes('lan')) {
+        if (from.ID < to.ID) {
+          edges.push({
+            From: from.ID,
+            To: to.ID,
+            Layer: 'policy',
+            Kind: 'policy:lan',
+            Bidir: true
+          })
+        }
+      } else {
+        edges.push({
+          From: from.ID,
+          To: to.ID,
+          Layer: 'policy',
+          Kind: 'policy:lan'
+        })
+      }
+    }
+  }
+
+  for (let endpoint of endpoints) {
+    for (let device of devices) {
+      if (device.Tags?.some((tag) => endpoint.Tags?.includes(tag))) {
+        edges.push({
+          From: device.ID,
+          To: endpoint.ID,
+          Layer: 'policy',
+          Kind: 'endpoint:' + endpoint.Name
+        })
+      }
+    }
+  }
+
+  edges.push({
+    From: 'dev:99:99:99:99:99:99',
+    To: 'plugin:usque:sink:warp',
+    Layer: 'policy',
+    Kind: 'route'
+  })
+
+  return edges
+}
+
+const mockTopoSinks = [
+  {
+    ID: 'plugin:usque:sink:warp',
+    Name: 'Cloudflare WARP',
+    Iface: 'spr-usque',
+    IP: '172.30.118.2',
+    Online: true
+  }
+]
+
+const syncMockTopoDevice = (attrs) => {
+  const id = attrs.MAC || attrs.WGPubKey
+  if (!id) return
+  const node = mockTopoNodes.find(
+    (node) => node.Kind == 'device' && node.MAC == id
+  )
+  if (!node) return
+  if (attrs.Groups) node.Groups = attrs.Groups
+  if (attrs.Policies) node.Policies = attrs.Policies
+  if (attrs.DeviceTags) node.Tags = attrs.DeviceTags
+  if (attrs.Name) node.Name = attrs.Name
+}
+
+const mockClassify = (signals = {}) => {
+  let hostname = signals.Hostname || signals.Name || ''
+  let category = 'unknown'
+  let vendor = signals.OUIVendor || ''
+  let confidence = 'Unknown'
+  let evidence = []
+
+  if (hostname.match(/tv|roku|chromecast/i)) {
+    category = 'tv'
+  } else if (hostname.match(/phone|iphone|android/i)) {
+    category = 'phone'
+  } else if (hostname.match(/printer|officejet|laserjet|brother|epson/i)) {
+    category = 'printer'
+  } else if (hostname.match(/camera|ring|reolink|doorbell/i)) {
+    category = 'camera'
+  } else if (hostname.match(/xbox|playstation|nintendo|switch/i)) {
+    category = 'game-console'
+  } else if (hostname.match(/tablet|ipad/i)) {
+    category = 'tablet'
+  } else if (hostname.match(/rpi|esp32|sensor/i)) {
+    category = 'iot-sensor'
+  } else if (hostname.match(/desktop|tower|\bpc\b/i)) {
+    category = 'desktop'
+  } else if (hostname.match(/laptop|macbook|thinkpad/i)) {
+    category = 'laptop'
+  }
+
+  if (category != 'unknown') {
+    confidence = 'High'
+    evidence.push(`hostname "${hostname}" indicates ${category}`)
+  }
+  if (vendor) {
+    evidence.push(`OUI vendor is "${vendor}"`)
+  }
+
+  let suggestions = {
+    camera: { Groups: ['IoT'], Policies: ['wan', 'dns'] },
+    'iot-sensor': { Groups: ['IoT'], Policies: ['wan', 'dns'] },
+    printer: { Groups: ['Printers'], Policies: ['dns'] },
+    tv: { Groups: ['Media'], Policies: ['wan', 'dns'] }
+  }
+
+  return {
+    MAC: signals.MAC,
+    Vendor: vendor,
+    Category: category,
+    Model: '',
+    Confidence: confidence,
+    Evidence: evidence,
+    SuggestedGroups: suggestions[category]?.Groups || [],
+    SuggestedPolicies: suggestions[category]?.Policies || [],
+    DBVersion: 'mock',
+    UserCorrection: false,
+    Pinned: false,
+    LastUpdated: new Date().toISOString()
+  }
+}
+
+// TODO alot of this can be parsed from OpenAPI definitions
+export default function MockAPI(props = null) {
+  if (props) {
+    opts = { ...props }
+  }
+
+  if (server) {
+    return server
+  }
+
+  server = createServer({
+    models: {
+      devices: Model,
+      groups: Model,
+      dnsblocklist: Model,
+      dnsoverride: Model,
+      dnslogprivacylist: Model,
+      dnslogdomainignorelist: Model,
+      wireguardpeer: Model,
+      plugin: Model,
+      forwardrule: Model,
+      blockrule: Model,
+      forwardblockrule: Model,
+      serviceport: Model,
+      custominterfacerule: Model,
+      token: Model,
+      backup: Model,
+      pfwBlockRule: Model,
+      pfwTagRule: Model,
+      pfwForwardRule: Model,
+      vpnSite: Model,
+      uplink: Model,
+      tinynets: Model
+    },
+    seeds(server) {
+      server.create('device', {
+        Name: 'rpi4',
+        MAC: '11:11:11:11:11:11',
+        WGPubKey: 'pubkey',
+        VLANTag: 'vlantag',
+        RecentIP: '192.168.2.101',
+        DHCPFirstTime: new Date(Date.now() - 2 * 3600e3).toISOString(),
+        PSKEntry: {
+          Type: 'None',
+          Psk: null
+        },
+        Policies: ['lan', 'wan', 'lan_upstream', 'dns'],
+        Groups: [],
+        DeviceTags: ['private'],
+        Style: {
+          Icon: 'Router',
+          Color: 'amber'
+        }
+      })
+
+      server.create('device', {
+        Name: 'laptop',
+        MAC: '22:22:22:22:22:22',
+        WGPubKey: 'pubkey',
+        VLANTag: 'vlantag',
+        RecentIP: '192.168.2.102',
+        DHCPFirstTime: new Date(Date.now() - 26 * 3600e3).toISOString(),
+        PSKEntry: {
+          Type: 'wpa2',
+          Psk: 'password'
+        },
+        Policies: ['wan', 'dns'],
+        Groups: [],
+        DeviceTags: ['private'],
+        Style: {
+          Icon: 'Laptop',
+          Color: 'blueGray'
+        }
+      })
+
+      server.create('device', {
+        Name: 'spr-atlas',
+        Type: 'Container',
+        MAC: '02:53:50:52:4b:21',
+        RecentIP: '192.168.2.110',
+        DHCPLastInterface: 'spr-atlas',
+        DHCPFirstTime: new Date(Date.now() - 30 * 60e3).toISOString(),
+        DHCPLastTime: new Date(Date.now() - 2 * 60e3).toISOString(),
+        PSKEntry: {
+          Type: 'None',
+          Psk: null
+        },
+        Policies: [],
+        Groups: [],
+        DeviceTags: [],
+        Style: {
+          Icon: 'Server',
+          Color: 'cyan'
+        }
+      })
+
+      server.create('custominterfacerule', {
+        RuleName: 'Plugin-spr-atlas',
+        Description: '',
+        Disabled: false,
+        Interface: 'spr-atlas',
+        SrcIP: '192.168.2.110',
+        RouteDst: '',
+        Policies: ['wan', 'dns'],
+        Groups: [],
+        Tags: []
+      })
+
+      let devs = ['phone', 'laptop', 'tv', 'desktop', 'iphone', 'android']
+
+      for (let i = 3; i < devs.length + 3; i++) {
+        let Name = devs[i - 3]
+        let Icon = Name.match(/phone|android/) ? 'Mobile' : 'Laptop'
+        if (Name.match(/tv/)) Icon = 'Tv'
+        let Color = rpick([
+          'violet',
+          'purple',
+          'fuchsia',
+          'pink',
+          'red',
+          'tertiary',
+          'teal',
+          'cyan',
+          'blueGray',
+          'amber'
+        ])
+
+        server.create('device', {
+          Name,
+          MAC: Array(6).fill(`${i}${i}`).join(':'),
+          WGPubKey: 'pubkey',
+          //VLANTag: 'vlantag',
+          RecentIP: `192.168.2.10${i}`,
+          DHCPFirstTime: new Date(Date.now() - i * 3600e3).toISOString(),
+          PSKEntry: {
+            Type: rpick(['wpa2', 'sae']),
+            Psk: `password${i}`
+          },
+          Policies: ['wan', 'dns'],
+          Groups: [rpick(['first_group', 'second_group'])],
+          DeviceTags: [
+            'private',
+            `classification:${Icon == 'Tv' ? 'tv' : Icon == 'Mobile' ? 'phone' : 'laptop'}`,
+            ...(['desktop', 'tv'].includes(Name) ? ['persona:gamer'] : []),
+            ...(['iphone', 'android'].includes(Name) ? ['persona:kids'] : [])
+          ],
+          Style: {
+            Icon,
+            Color
+          }
+        })
+      }
+
+      server.create('group', {
+        Name: 'testing',
+        disabled: false,
+        GroupTags: []
+      })
+      server.create('group', {
+        Name: 'testing2',
+        disabled: false,
+        GroupTags: []
+      })
+      server.create('group', {
+        Name: 'testing3',
+        disabled: false,
+        GroupTags: []
+      })
+
+      server.create('plugin', {
+        Name: 'dns-block',
+        URI: 'dns/block',
+        UnixPath: '/state/dns/dns_block_plugin',
+        Enabled: true,
+        Plus: false,
+        GitURL: '',
+        ComposeFilePath: ''
+      })
+      server.create('plugin', {
+        Name: 'dns-log',
+        URI: 'dns/log',
+        UnixPath: '/state/dns/dns_log_plugin',
+        Enabled: true
+      })
+      server.create('plugin', {
+        Name: 'wireguard',
+        URI: 'wireguard',
+        UnixPath: '/state/wireguard/wireguard_plugin',
+        Enabled: true
+      })
+      server.create('plugin', {
+        Name: 'lookup',
+        URI: 'lookup',
+        UnixPath: '/state/plugin-lookup/lookup_plugin',
+        Enabled: true
+      })
+      server.create('plugin', {
+        Name: 'PFW',
+        URI: 'pfw',
+        UnixPath: '/state/plugins/pfw/socket',
+        Enabled: true,
+        Plus: true,
+        GitURL: 'github.com/spr-networks/pfw_extension',
+        ComposeFilePath: 'plugins/plus/pfw_extension/docker-compose.yml'
+      })
+      server.create('plugin', {
+        Name: 'MESH',
+        URI: 'mesh',
+        UnixPath: '/state/plugins/mesh/socket',
+        Enabled: false,
+        Plus: true,
+        GitURL: 'github.com/spr-networks/mesh_extension',
+        ComposeFilePath: 'plugins/plus/mesh_extension/docker-compose.yml'
+      })
+      server.create('plugin', {
+        Name: 'spr-atlas',
+        URI: 'spr-atlas',
+        UnixPath: '/state/plugins/spr-atlas/socket',
+        Enabled: true,
+        Plus: false,
+        GitURL: 'github.com/spr-networks/spr-atlas',
+        ComposeFilePath: 'plugins/user/spr-atlas/docker-compose-kvm.yml',
+        Runtime: 'kvm',
+        AvailableRuntimes: ['default', 'kvm']
+      })
+
+      server.create('forwardrule', {
+        SIface: 'wlan1',
+        Protocol: 'tcp',
+        SrcIP: '10.10.10.10',
+        SrcPort: 22,
+        DstIP: '192.168.2.101',
+        DstPort: 22
+      })
+      server.create('forwardrule', {
+        Protocol: 'tcp',
+        SrcIP: '0.0.0.0/0',
+        SrcPort: 80,
+        DstIP: '192.168.2.101',
+        DstPort: 80
+      })
+
+      server.create('blockrule', {
+        SrcIP: '0.0.0.0/0',
+        DstIP: '192.168.1.102',
+        Protocol: 'tcp'
+      })
+
+      server.create('forwardblockrule', {
+        SrcIP: '1.2.3.4',
+        DstPort: '0-65535',
+        DstIP: '6.7.8.9/24',
+        Protocol: 'tcp'
+      })
+
+      server.create('serviceport', {
+        Protocol: 'tcp',
+        Port: '22',
+        UpstreamEnabled: false
+      })
+      server.create('serviceport', {
+        Protocol: 'tcp',
+        Port: '80',
+        UpstreamEnabled: false
+      })
+      server.create('serviceport', {
+        Protocol: 'tcp',
+        Port: '443',
+        UpstreamEnabled: false
+      })
+      server.create('serviceport', {
+        Protocol: 'tcp',
+        Port: '5201',
+        UpstreamEnabled: false
+      })
+
+      server.create('dnsblocklist', {
+        URI: 'https://raw.githubusercontent.com/blocklistproject/Lists/master/ads.txt',
+        Enabled: true
+      })
+      server.create('dnsblocklist', {
+        URI: 'https://raw.githubusercontent.com/blocklistproject/Lists/master/youtube.txt',
+        Enabled: true,
+        Tags: ['focus']
+      })
+      server.create('dnsoverride', {
+        Type: 'block',
+        Domain: 'example.com.',
+        ResultIP: '1.2.3.4',
+        ClientIP: '192.168.2.101',
+        Expiration: 0
+      })
+
+      server.create('dnsoverride', {
+        Type: 'block',
+        Domain: 'asdf.com.',
+        ResultIP: '1.2.3.4',
+        ClientIP: '*',
+        Expiration: 0
+      })
+
+      server.create('dnsoverride', {
+        Type: 'permit',
+        Domain: 'google.com.',
+        ResultIP: '8.8.8.8',
+        ClientIP: '192.168.2.102',
+        Expiration: 123
+      })
+
+      server.create('dnslogprivacylist', { ip: '192.168.1.1' })
+      server.create('dnslogprivacylist', { ip: '192.168.1.101' })
+      server.create('dnslogdomainignorelist', { domain: 'example.com' })
+      server.create('dnslogdomainignorelist', { domain: 'privatedomain.com' })
+
+      server.create('wireguardpeer', {
+        PublicKey: 'QX9cpyIY7mh1kuVSBnRHJyyqnJQ6iuHdwqSPviPwdT8=',
+        PresharedKey: 'YotzN+tIBiiY+q3FkjRM5nEHq0tXMX6c0tT7ls9516E=',
+        AllowedIPs: '192.168.3.2/32',
+        Endpoint: '192.168.2.1:51280',
+        PersistentKeepalive: 25
+      })
+
+      server.create('wireguardpeer', {
+        PublicKey: '2woVWXJcMcb/7Kh44bevC1eIQnbYBh9nDWyHc8LqWXY=',
+        PresharedKey: '1HyPMEAITlOYoHBLvmYQV2qeWgM3Y5CPLDAZiBEl8HI=',
+        AllowedIPs: '192.168.3.3/32',
+        Endpoint: '192.168.2.1:51280',
+        PersistentKeepalive: 25
+      })
+
+      server.create('token', {
+        Name: 'TokenTest',
+        Token: 'QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQo=',
+        Expire: 0
+      })
+
+      server.create('token', {
+        Name: 'TokenTest2',
+        Token: 'QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQgo=',
+        Expire: 0
+      })
+
+      server.create('backup', {
+        Name: 'spr-configs-v0.1.0-beta.0.tgz',
+        Timestamp: Date.now()
+      })
+
+      server.create('tinynet', { Subnet: '192.168.2.0/24' })
+
+      server.create('pfwBlockRule', {
+        RuleName: 'Always block',
+        Client: { Identity: '', Group: '', SrcIP: '0.0.0.0', Tag: '' },
+        Time: {
+          CronExpr: '',
+          Start: '',
+          End: '',
+          Days: [0, 0, 0, 0, 0, 0, 0]
+        },
+        Expiration: 0,
+        Condition: '',
+        Disabled: false,
+        Protocol: 'tcp',
+        Dst: { IP: '213.24.76.23' },
+        DstPort: '0-65535'
+      })
+
+      server.create('pfwTagRule', {
+        RuleName: 'Set focus mode, midnight - 6pm',
+        Client: {
+          Identity: '',
+          Group: '',
+          SrcIP: '192.168.2.14',
+          Tag: ''
+        },
+        Time: {
+          CronExpr: '',
+          Start: '00:00',
+          End: '18:00',
+          Days: [0, 1, 1, 1, 1, 1, 0]
+        },
+        Expiration: 0,
+        Condition: '',
+        Disabled: false,
+        Tags: ['focus']
+      })
+
+      server.create('pfwForwardRule', {
+        RuleName: 'Work laptop via Cloudflare WARP',
+        Client: { SrcIP: '192.168.2.129' },
+        Time: {
+          CronExpr: '',
+          Start: '',
+          End: '',
+          Days: [0, 0, 0, 0, 0, 0, 0]
+        },
+        OriginalDst: { IP: '0.0.0.0/0' },
+        Dst: { IP: '172.30.118.2' },
+        DstInterface: 'spr-usque',
+        Protocol: '',
+        Disabled: false
+      })
+
+      server.create('vpnSite', {
+        Address: '1.1.1.23',
+        PeerPublicKey: 'AAAA',
+        PrivateKey: 'bbbb',
+        PresharedKey: 'CCCC',
+        Endpoint: '1.1.1.2:12345'
+      })
+    },
+    routes() {
+      // Browser-local AI models are fetched directly from their remote artifact
+      // hosts. Mirage must not turn these cross-origin requests into mock HTML.
+      this.passthrough('https://huggingface.co/**')
+      this.passthrough('https://cdn-lfs.hf.co/**')
+      this.passthrough('https://cdn-lfs-us-1.hf.co/**')
+      this.passthrough('https://cas-bridge.xethub.hf.co/**')
+      this.passthrough('https://raw.githubusercontent.com/**')
+
+      // TODO hook for all
+      const authOK = (request) => {
+        return true //TODO
+        if (opts.isSetup) {
+          //TODO urls: /setup , /ip/addr and others used
+          return true
+        }
+        try {
+          let [type, b64auth] = request.requestHeaders.Authorization?.split(' ')
+          return (
+            type == 'Basic' && b64auth && Base64.atob(b64auth) == 'admin:admin'
+          )
+        } catch (err) {
+          console.error('B64 err:', err)
+          return false
+        }
+      }
+
+      this.get('/setup', (schema, request) => {
+        if (opts.isSetup) {
+          return { status: 'ok' }
+        }
+
+        return new Response(400, {}, { error: 'already set up' })
+      })
+
+      this.put('/setup', (schema, request) => {
+        //if (opts.isSetup) {}
+        return { status: 'ok' }
+        //return new Response(400, {}, { error: 'already set up' })
+      })
+
+      this.put('/setup_done', (schema, request) => {
+        return { status: 'ok' }
+      })
+
+      this.put('/hostapd/restart_setup', (schema, request) => {
+        return { status: 'ok' }
+      })
+
+      this.put('/hostapd/:iface/:action', (schema, request) => {
+        //action==enable|config
+        return { status: 'ok' }
+      })
+
+      this.put('/link/config', (schema, request) => {
+        return { status: 'ok' }
+      })
+
+      this.put('/link/ip', (schema, request) => {
+        return { status: 'ok' }
+      })
+
+      this.get('/status', (schema, request) => {
+        return authOK(request) ? '"Online"' : '"Error"'
+      })
+
+      const wanNow = () => Math.floor(Date.now() / 1000)
+      const wanOutageStart = wanNow() - 45 * 60
+
+      this.get('/wan/status', (schema, request) => {
+        return [
+          {
+            Iface: 'eth0',
+            Up: true,
+            Active: true,
+            Gateway: '192.168.100.1',
+            LatencyMs: 12.4,
+            JitterMs: 1.1,
+            LossPct: 0,
+            LastChange: wanNow() - 86400 * 3,
+            TotalOutages: 1,
+            Downtime24h: 313
+          },
+          {
+            Iface: 'wlan1',
+            Up: false,
+            Active: false,
+            Gateway: '10.20.30.1',
+            LatencyMs: 0,
+            JitterMs: 0,
+            LossPct: 100,
+            LastChange: wanOutageStart,
+            TotalOutages: 2,
+            Downtime24h: wanNow() - wanOutageStart
+          }
+        ]
+      })
+
+      this.get('/wan/history/:iface', (schema, request) => {
+        let iface = request.params.iface
+        let scale = request.queryParams.scale || 'minutes'
+        let count = parseInt(
+          request.queryParams.count || (scale == 'hours' ? 720 : 1440)
+        )
+        let step = scale == 'hours' ? 3600 : 60
+        let base = iface == 'eth0' ? 12 : 35
+        let now = wanNow()
+        let samples = []
+        let eth0Start = now - 3600 * 5
+        for (let i = 0; i < count; i++) {
+          let t = now - i * step
+          let inOutage =
+            (iface == 'wlan1' && t > wanOutageStart) ||
+            (iface == 'eth0' && t > eth0Start && t < eth0Start + 313)
+          let wave =
+            Math.sin(t / 1800) * 3 + Math.sin(t / 300) * 1.5 + (i % 7) * 0.3
+          samples.push({
+            Time: t,
+            LatencyMs: inOutage ? 0 : Math.max(1, base + wave),
+            JitterMs: inOutage ? 0 : 1 + Math.abs(Math.sin(t / 900)) * 2,
+            LossPct: inOutage ? 100 : i % 40 == 0 ? 2.5 : 0,
+            Up: !inOutage
+          })
+        }
+        return samples
+      })
+
+      this.get('/wan/outages', (schema, request) => {
+        return [
+          {
+            Iface: 'wlan1',
+            Start: wanOutageStart,
+            End: 0,
+            Reason: 'probe timeouts'
+          },
+          {
+            Iface: 'eth0',
+            Start: wanNow() - 3600 * 5,
+            End: wanNow() - 3600 * 5 + 313,
+            Reason: 'probe timeouts'
+          },
+          {
+            Iface: 'wlan1',
+            Start: wanNow() - 86400 * 2,
+            End: wanNow() - 86400 * 2 + 1320,
+            Reason: 'probe timeouts'
+          }
+        ]
+      })
+
+      let wanMockConfig = {
+        Enabled: true,
+        IntervalSeconds: 5,
+        ProbeTargets: ['1.1.1.1', '8.8.8.8'],
+        FailThreshold: 4,
+        RecoverThreshold: 3,
+        FailoverEnabled: true,
+        SpeedTestURL: 'https://speed.cloudflare.com/__down?bytes=33554432'
+      }
+
+      this.get('/wan/config', (schema, request) => {
+        return wanMockConfig
+      })
+
+      this.put('/wan/config', (schema, request) => {
+        wanMockConfig = { ...wanMockConfig, ...JSON.parse(request.requestBody) }
+        return wanMockConfig
+      })
+
+      this.get('/wan/speedtest', (schema, request) => {
+        return [
+          {
+            Iface: 'eth0',
+            Time: wanNow() - 3600 * 20,
+            DownMbps: 941.7,
+            Seconds: 3.4,
+            Bytes: 33554432,
+            URL: 'https://speed.cloudflare.com/__down?bytes=33554432'
+          },
+          {
+            Iface: 'wlan1',
+            Time: wanNow() - 86400 * 4,
+            DownMbps: 87.2,
+            Seconds: 8.1,
+            Bytes: 33554432,
+            URL: 'https://speed.cloudflare.com/__down?bytes=33554432'
+          }
+        ]
+      })
+
+      this.put('/wan/speedtest/:iface', (schema, request) => {
+        return {
+          Iface: request.params.iface,
+          Time: wanNow(),
+          DownMbps: request.params.iface == 'eth0' ? 936.2 : 91.4,
+          Seconds: 3.6,
+          Bytes: 33554432,
+          URL: 'https://speed.cloudflare.com/__down?bytes=33554432'
+        }
+      })
+
+      this.get('/devices', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        let devices = schema.devices.all().models
+        let res = {}
+        for (let d of devices) {
+          res[d.MAC] = d
+        }
+
+        return res
+      })
+
+      this.put('/device/:id', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        let MAC = request.params.id
+        let dev = schema.devices.findBy({ MAC })
+        let attrs = JSON.parse(request.requestBody)
+
+        if (dev) {
+          dev.update(attrs)
+          return dev
+        } else {
+          let _dev = {
+            MAC,
+            Name: attrs.Name,
+            PSKEntry: attrs.PSKEntry,
+            Groups: [],
+            DeviceTags: []
+          }
+
+          return schema.devices.create(_dev)
+        }
+      })
+
+      this.put('/device', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        // NOTE use mirage's queryParams: React Native's URLSearchParams shim
+        // throws "not implemented" from get(), 500ing this route on iOS.
+        let id = request.queryParams.identity
+        let copy = request.queryParams.copy
+
+        let MAC = copy || id
+
+        let dev = schema.devices.findBy({ MAC })
+        let attrs = JSON.parse(request.requestBody)
+
+        syncMockTopoDevice({ ...attrs, MAC: attrs.MAC || id })
+
+        if (copy) {
+          let _dev = { ...attrs, PSKEntry: dev.PSKEntry, DeviceTags: [] }
+
+          return schema.devices.create(_dev)
+        } else if (dev) {
+          dev.update(attrs)
+          return schema.devices.findBy({ MAC }).attrs
+        } else {
+          let PSKEntry = attrs.PSKEntry || { Type: 'sae' }
+          if (!PSKEntry.Psk) {
+            PSKEntry.Psk = 'password'
+          }
+
+          let _dev = {
+            Name: 'newdevice',
+            MAC: '11:11:11:11:11:23',
+            WGPubKey: 'pubkey',
+            VLANTag: 'vlantag',
+            RecentIP: '192.168.2.123',
+            PSKEntry: {
+              Type: 'sae',
+              Psk: 'password'
+            },
+            Policies: ['lan', 'dns'],
+            Groups: [],
+            DeviceTags: ['private'],
+            Style: {
+              Icon: 'Laptop',
+              Color: 'blueGray'
+            },
+            ...attrs
+          }
+
+          schema.devices.create(_dev)
+          return _dev
+        }
+      })
+
+      this.del('/device/:id', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        let id = request.params.id
+        return schema.devices.findBy({ MAC: id }).destroy()
+      })
+
+      this.del('/device', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        let id = request.queryParams.identity
+
+        return schema.devices.findBy({ MAC: id }).destroy()
+      })
+
+      this.del('/devices', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        let identities = JSON.parse(request.requestBody || '[]')
+        let count = 0
+        for (let id of identities) {
+          let dev = schema.devices.findBy({ MAC: id })
+          if (dev) {
+            dev.destroy()
+            count += 1
+          }
+        }
+        return { updated: identities, count }
+      })
+
+      this.put('/devices/bulk', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        let attrs = JSON.parse(request.requestBody || '{}')
+        let count = 0
+        for (let id of attrs.Identities || []) {
+          let dev = schema.devices.findBy({ MAC: id })
+          if (!dev) continue
+
+          dev.update({
+            Groups: [...new Set([...(dev.Groups || []), ...(attrs.Groups || [])])],
+            DeviceTags: [
+              ...new Set([...(dev.DeviceTags || []), ...(attrs.Tags || [])])
+            ],
+            Policies: [
+              ...new Set([...(dev.Policies || []), ...(attrs.Policies || [])])
+            ]
+          })
+          count += 1
+        }
+        return { updated: attrs.Identities || [], count }
+      })
+
+      this.get('/interfacesConfiguration', (schema, request) => {
+        return [
+          {
+            Name: 'eth0',
+            Type: 'Uplink',
+            Enabled: true,
+            AdditionalIPs: [
+              { IP: '10.0.0.1/24', Router: '' }
+            ]
+          },
+          {
+            Name: 'wlan1',
+            Type: 'AP',
+            Enabled: true
+          },
+          {
+            Name: 'ppp0',
+            Type: 'Uplink',
+            Enabled: true
+          },
+          {
+            Name: 'eth0.123',
+            Type: 'Other',
+            Enabled: true,
+            AdditionalIPs: [
+              { IP: '192.168.5.1/24', Router: '192.168.5.254' }
+            ]
+          }
+        ]
+      })
+
+      this.get('/groups', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        return schema.groups.all().models
+      })
+
+      this.get('/pendingPSK', (schema, request) => {
+        return false
+      })
+
+      this.get('/arp', (schema, request) => {
+        return [
+          {
+            IP: '192.168.2.101',
+            HWType: '0x1',
+            Flags: '0x6',
+            MAC: '11:11:11:11:11:11',
+            Mask: '*',
+            Device: 'wlan1.4096'
+          },
+          {
+            IP: '192.168.2.102',
+            HWType: '0x1',
+            Flags: '0x6',
+            MAC: '22:22:22:22:22:22',
+            Mask: '*',
+            Device: 'wlan1.4097'
+          }
+        ]
+      })
+
+      this.get('/topology', (schema, request) => {
+        return {
+          GeneratedAt: new Date().toISOString(),
+          Nodes: mockTopoNodes,
+          Edges: [...mockTopoL1Edges, ...mockTopoPolicyEdges()],
+          Sinks: mockTopoSinks
+        }
+      })
+
+      this.get('/info/dockernetworks', (schema, request) => {
+        return [
+          {
+            Name: 'none',
+            Id: '0af4adec2d12a0429f0146259b0a4a8a2ba1a4a2749683b06d1bad065bae6923',
+            Created: '2023-11-16T17:27:11.145807881Z',
+            Scope: 'local',
+            Driver: 'null',
+            EnableIPv6: false,
+            IPAM: {
+              Driver: 'default',
+              Options: null,
+              Config: []
+            },
+            Internal: false,
+            Attachable: false,
+            Ingress: false,
+            ConfigFrom: {
+              Network: ''
+            },
+            ConfigOnly: false,
+            Containers: {},
+            Options: {},
+            Labels: {}
+          },
+          {
+            Name: 'spr-mitmproxy_mitmnet',
+            Id: '35dea03471420e9b1913b4046bf2d3983ff81505693d637a080127d6474eb802',
+            Created: '2023-11-17T03:32:38.507735167Z',
+            Scope: 'local',
+            Driver: 'bridge',
+            EnableIPv6: false,
+            IPAM: {
+              Driver: 'default',
+              Options: null,
+              Config: [
+                {
+                  Subnet: '172.19.0.0/16',
+                  Gateway: '172.19.0.1'
+                }
+              ]
+            },
+            Internal: false,
+            Attachable: false,
+            Ingress: false,
+            ConfigFrom: {
+              Network: ''
+            },
+            ConfigOnly: false,
+            Containers: {
+              abc123: {
+                Name: 'spr-mitmproxy',
+                EndpointID: 'e1',
+                MacAddress: '02:42:ac:14:00:02',
+                IPv4Address: '172.20.0.2/24',
+                IPv6Address: ''
+              }
+            },
+            Options: {
+              'com.docker.network.bridge.name': 'mitmweb0'
+            },
+            Labels: {
+              'com.docker.compose.network': 'mitmnet',
+              'com.docker.compose.project': 'spr-mitmproxy',
+              'com.docker.compose.version': '2.21.0'
+            }
+          },
+          {
+            Name: 'host',
+            Id: '78ab816140fe23ba86c5ed5ba5e1d64fcecf063df07346d609ab8cd519dfbc94',
+            Created: '2023-11-16T17:27:11.194437585Z',
+            Scope: 'local',
+            Driver: 'host',
+            EnableIPv6: false,
+            IPAM: {
+              Driver: 'default',
+              Options: null,
+              Config: []
+            },
+            Internal: false,
+            Attachable: false,
+            Ingress: false,
+            ConfigFrom: {
+              Network: ''
+            },
+            ConfigOnly: false,
+            Containers: {},
+            Options: {},
+            Labels: {}
+          },
+          {
+            Name: 'bridge',
+            Id: '43a43805e2386fcc05130baa145f4291b901de2c8b6eae24ad286316e70f6416',
+            Created: '2023-11-25T09:02:59.603700795Z',
+            Scope: 'local',
+            Driver: 'bridge',
+            EnableIPv6: false,
+            IPAM: {
+              Driver: 'default',
+              Options: null,
+              Config: [
+                {
+                  Subnet: '172.17.0.0/16',
+                  Gateway: '172.17.0.1'
+                }
+              ]
+            },
+            Internal: false,
+            Attachable: false,
+            Ingress: false,
+            ConfigFrom: {
+              Network: ''
+            },
+            ConfigOnly: false,
+            Containers: {},
+            Options: {
+              'com.docker.network.bridge.default_bridge': 'true',
+              'com.docker.network.bridge.enable_icc': 'true',
+              'com.docker.network.bridge.enable_ip_masquerade': 'false',
+              'com.docker.network.bridge.host_binding_ipv4': '0.0.0.0',
+              'com.docker.network.bridge.name': 'docker0',
+              'com.docker.network.driver.mtu': '1500'
+            },
+            Labels: {}
+          }
+        ]
+      })
+
+      this.get('/nfmap/:id', (schema, request) => {
+        let id = request.params.id
+        if (id.match(/(lan|internet|dns|dhcp)_access/)) {
+          return {
+            nftables: [{}, { map: { elem: ['wifi0', 'eth0'], type: 'zz' } }]
+          }
+        } else if (id == 'ethernet_filter') {
+          return {
+            nftables: [
+              {
+                metainfo: {
+                  version: '1.0.6',
+                  release_name: 'Lester Gooch #5',
+                  json_schema_version: 1
+                }
+              },
+              {
+                map: {
+                  family: 'inet',
+                  name: 'ethernet_filter',
+                  table: 'filter',
+                  type: ['ipv4_addr', 'ifname', 'ether_addr'],
+                  handle: 20,
+                  map: 'verdict',
+                  elem: [
+                    [
+                      {
+                        concat: [
+                          '192.168.2.101',
+                          'wlan1.4096',
+                          '11:11:11:11:11:11'
+                        ]
+                      },
+                      {
+                        return: null
+                      }
+                    ],
+                    [
+                      {
+                        concat: [
+                          '192.168.2.102',
+                          'wlan1.4097',
+                          '22:22:22:22:22:22'
+                        ]
+                      },
+                      {
+                        return: null
+                      }
+                    ]
+                  ]
+                }
+              }
+            ]
+          }
+        }
+
+        return {}
+      })
+
+      this.get('/ip/addr', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        return [
+          {
+            ifindex: 1,
+            ifname: 'eth0',
+            flags: ['BROADCAST'],
+            mtu: 0,
+            qdisc: 'string',
+            operstate: 'UP',
+            group: 'default',
+            txqlen: 1000,
+            link_type: 'ether',
+            address: '00:11:00:11:00:11',
+            broadcast: 'ff:ff:ff:ff:ff:ff',
+            addr_info: [
+              {
+                family: 'inet',
+                local: '192.168.0.1',
+                prefixlen: 24,
+                scope: 'global',
+                valid_life_time: 4294967295,
+                preferred_life_time: 'preferred_life_time'
+              }
+            ]
+          },
+          {
+            ifindex: 2,
+            ifname: 'wlan0',
+            flags: ['BROADCAST'],
+            mtu: 0,
+            qdisc: 'string',
+            operstate: 'UP',
+            group: 'default',
+            txqlen: 1000,
+            link_type: 'ether',
+            address: '11:22:33:44:55:66',
+            broadcast: 'ff:ff:ff:ff:ff:ff',
+            addr_info: [
+              {
+                family: 'inet',
+                local: '192.168.22.22',
+                prefixlen: 24,
+                scope: 'global',
+                valid_life_time: 4294967295,
+                preferred_life_time: 'preferred_life_time'
+              }
+            ]
+          },
+          {
+            ifindex: 3,
+            ifname: 'wlan1',
+            flags: ['BROADCAST'],
+            mtu: 0,
+            qdisc: 'string',
+            operstate: 'UP',
+            group: 'default',
+            txqlen: 1000,
+            link_type: 'ether',
+            address: '11:22:33:44:55:66',
+            broadcast: 'ff:ff:ff:ff:ff:ff',
+            addr_info: [
+              {
+                family: 'inet',
+                local: '192.168.2.1',
+                prefixlen: 24,
+                scope: 'global',
+                valid_life_time: 4294967295,
+                preferred_life_time: 'preferred_life_time'
+              }
+            ]
+          },
+          {
+            ifindex: 4,
+            ifname: 'ppp0',
+            flags: ['BROADCAST'],
+            mtu: 0,
+            qdisc: 'string',
+            operstate: 'UP',
+            group: 'default',
+            txqlen: 1000,
+            link_type: 'ether',
+            address: '00:11:00:11:00:33',
+            broadcast: 'ff:ff:ff:ff:ff:ff',
+            addr_info: [
+              {
+                family: 'inet',
+                local: '11.22.33.44',
+                prefixlen: 24,
+                scope: 'global',
+                valid_life_time: 4294967295,
+                preferred_life_time: 'preferred_life_time'
+              }
+            ]
+          },
+          {
+            ifindex: 5,
+            ifname: 'eth0.123',
+            flags: ['BROADCAST'],
+            mtu: 0,
+            qdisc: 'string',
+            operstate: 'UP',
+            group: 'default',
+            txqlen: 1000,
+            link_type: 'ether',
+            address: '00:22:00:11:00:11',
+            broadcast: 'ff:ff:ff:ff:ff:ff',
+            addr_info: [
+              {
+                family: 'inet',
+                local: '192.168.99.99',
+                prefixlen: 24,
+                scope: 'global',
+                valid_life_time: 4294967295,
+                preferred_life_time: 'preferred_life_time'
+              },
+              {
+                family: 'inet6',
+                local: 'fd00:1234:5678:2:aabb:ccff:fedd:eeff',
+                prefixlen: 64,
+                scope: 'global',
+                flags: ['dynamic', 'mngtmpaddr', 'noprefixroute'],
+                valid_life_time: 42633,
+                preferred_life_time: 42633
+              },
+              {
+                family: 'inet6',
+                local: '2001:db8:1234:5678:aabb:ccff:fedd:eeff',
+                prefixlen: 64,
+                scope: 'global',
+                flags: ['dynamic', 'mngtmpaddr', 'noprefixroute'],
+                valid_life_time: 42633,
+                preferred_life_time: 42633
+              }
+            ]
+          }
+        ]
+      })
+
+      this.get('/iw/list', (schema) => {
+        return [
+          {
+            wiphy: 'phy0',
+            wiphy_index: 0,
+            max_scan_ssids: 4,
+            max_scan_ies_length: '2243 bytes',
+            max_sched_scan_ssids: 0,
+            max_match_sets: 0,
+            retry_short_limit: 7,
+            retry_long_limit: 4,
+            coverage_class: '0 (up to 0m)',
+            device_supports: ['RSN-IBSS', 'AP-side u-APSD', 'T-DLS'],
+            supported_ciphers: [
+              'WEP40 (00-0f-ac:1)',
+              'WEP104 (00-0f-ac:5)',
+              'TKIP (00-0f-ac:2)',
+              'CCMP-128 (00-0f-ac:4)',
+              'CCMP-256 (00-0f-ac:10)',
+              'GCMP-128 (00-0f-ac:8)',
+              'GCMP-256 (00-0f-ac:9)',
+              'CMAC (00-0f-ac:6)',
+              'CMAC-256 (00-0f-ac:13)',
+              'GMAC-128 (00-0f-ac:11)',
+              'GMAC-256 (00-0f-ac:12)',
+              'Available Antennas: TX 0x3 RX 0x3',
+              'Configured Antennas: TX 0x3 RX 0x3'
+            ],
+            bands: [
+              {
+                band: 'Band 1',
+                capabilities: [
+                  '0x1ff',
+                  'RX LDPC',
+                  'HT20/HT40',
+                  'SM Power Save disabled',
+                  'RX Greenfield',
+                  'RX HT20 SGI',
+                  'RX HT40 SGI',
+                  'TX STBC',
+                  'RX STBC 1-stream',
+                  'Max AMSDU length: 3839 bytes',
+                  'No DSSS/CCK HT40',
+                  'Maximum RX AMPDU length 65535 bytes (exponent: 0x003)',
+                  'Minimum RX AMPDU time spacing: No restriction (0x00)',
+                  'HT TX/RX MCS rate indexes supported: 0-15'
+                ],
+                bitrates: [
+                  '1.0 Mbps (short preamble supported)',
+                  '2.0 Mbps (short preamble supported)',
+                  '5.5 Mbps (short preamble supported)',
+                  '11.0 Mbps (short preamble supported)',
+                  '6.0 Mbps',
+                  '9.0 Mbps',
+                  '12.0 Mbps',
+                  '18.0 Mbps',
+                  '24.0 Mbps',
+                  '36.0 Mbps',
+                  '48.0 Mbps',
+                  '54.0 Mbps'
+                ]
+              },
+              {
+                band: 'Band 2',
+                frequencies: [
+                  '5180 MHz [36] (18.0 dBm)',
+                  '5200 MHz [40] (18.0 dBm)',
+                  '5220 MHz [44] (18.0 dBm)',
+                  '5240 MHz [48] (18.0 dBm)',
+                  '5260 MHz [52] (18.0 dBm) (radar detection)',
+                  '5280 MHz [56] (18.0 dBm) (radar detection)',
+                  '5300 MHz [60] (18.0 dBm) (radar detection)',
+                  '5320 MHz [64] (18.0 dBm) (radar detection)',
+                  '5500 MHz [100] (18.0 dBm) (radar detection)',
+                  '5520 MHz [104] (18.0 dBm) (radar detection)',
+                  '5540 MHz [108] (18.0 dBm) (radar detection)',
+                  '5560 MHz [112] (18.0 dBm) (radar detection)',
+                  '5580 MHz [116] (18.0 dBm) (radar detection)',
+                  '5600 MHz [120] (18.0 dBm) (radar detection)',
+                  '5620 MHz [124] (18.0 dBm) (radar detection)',
+                  '5640 MHz [128] (18.0 dBm) (radar detection)',
+                  '5660 MHz [132] (18.0 dBm) (radar detection)',
+                  '5680 MHz [136] (18.0 dBm) (radar detection)',
+                  '5700 MHz [140] (18.0 dBm) (radar detection)',
+                  '5720 MHz [144] (18.0 dBm) (radar detection)',
+                  '5745 MHz [149] (18.0 dBm)',
+                  '5765 MHz [153] (18.0 dBm)',
+                  '5785 MHz [157] (18.0 dBm)',
+                  '5805 MHz [161] (18.0 dBm)',
+                  '5825 MHz [165] (18.0 dBm)',
+                  '5845 MHz [169] (18.0 dBm) (no IR)',
+                  '5865 MHz [173] (18.0 dBm) (no IR)'
+                ],
+                capabilities: [
+                  '0x1ff',
+                  'RX LDPC',
+                  'HT20/HT40',
+                  'SM Power Save disabled',
+                  'RX Greenfield',
+                  'RX HT20 SGI',
+                  'RX HT40 SGI',
+                  'TX STBC',
+                  'RX STBC 1-stream',
+                  'Max AMSDU length: 3839 bytes',
+                  'No DSSS/CCK HT40',
+                  'Maximum RX AMPDU length 65535 bytes (exponent: 0x003)',
+                  'Minimum RX AMPDU time spacing: No restriction (0x00)',
+                  'HT TX/RX MCS rate indexes supported: 0-15'
+                ],
+                vht_capabilities: [
+                  'Max MPDU length: 3895',
+                  'Supported Channel Width: neither 160 nor 80+80',
+                  'RX LDPC',
+                  'short GI (80 MHz)',
+                  'TX STBC',
+                  'RX antenna pattern consistency',
+                  'TX antenna pattern consistency'
+                ],
+                vht_rx_mcs_set: [
+                  '1 streams: MCS 0-9',
+                  '2 streams: MCS 0-9',
+                  '3 streams: not supported',
+                  '4 streams: not supported',
+                  '5 streams: not supported',
+                  '6 streams: not supported',
+                  '7 streams: not supported',
+                  '8 streams: not supported',
+                  'VHT RX highest supported: 0 Mbps'
+                ],
+                vht_tx_mcs_set: [
+                  '1 streams: MCS 0-9',
+                  '2 streams: MCS 0-9',
+                  '3 streams: not supported',
+                  '4 streams: not supported',
+                  '5 streams: not supported',
+                  '6 streams: not supported',
+                  '7 streams: not supported',
+                  '8 streams: not supported',
+                  'VHT TX highest supported: 0 Mbps'
+                ],
+                bitrates: [
+                  '6.0 Mbps',
+                  '9.0 Mbps',
+                  '12.0 Mbps',
+                  '18.0 Mbps',
+                  '24.0 Mbps',
+                  '36.0 Mbps',
+                  '48.0 Mbps',
+                  '54.0 Mbps'
+                ]
+              }
+            ],
+            supported_interface_modes: [
+              'IBSS',
+              'managed',
+              'AP',
+              'AP/VLAN',
+              'monitor',
+              'mesh point',
+              'P2P-client',
+              'P2P-GO'
+            ],
+            supported_commands: [
+              'new_interface',
+              'set_interface',
+              'new_key',
+              'start_ap',
+              'new_station',
+              'new_mpath',
+              'set_mesh_config',
+              'set_bss',
+              'authenticate',
+              'associate',
+              'deauthenticate',
+              'disassociate',
+              'join_ibss',
+              'join_mesh',
+              'remain_on_channel',
+              'set_tx_bitrate_mask',
+              'frame',
+              'frame_wait_cancel',
+              'set_wiphy_netns',
+              'set_channel',
+              'tdls_mgmt',
+              'tdls_oper',
+              'probe_client',
+              'set_noack_map',
+              'register_beacons',
+              'start_p2p_device',
+              'set_mcast_rate',
+              'connect',
+              'disconnect',
+              'channel_switch',
+              'set_qos_map',
+              'set_multicast_to_unicast'
+            ],
+            software_interface_modes: ['AP/VLAN', 'monitor'],
+            valid_interface_combinations: [
+              '#{ IBSS } <= 1, #{ managed, AP, mesh point, P2P-client, P2P-GO } <= 2,',
+              'total <= 2, #channels <= 1, STA/AP BI must match'
+            ],
+            ht_capability_overrides: [
+              'MCS: ff ff ff ff ff ff ff ff ff ff',
+              'maximum A-MSDU length',
+              'supported channel width',
+              'short GI for 40 MHz',
+              'max A-MPDU length exponent',
+              'min MPDU start spacing',
+              'Device supports TX status socket option.',
+              'Device supports HT-IBSS.',
+              'Device supports SAE with AUTHENTICATE command',
+              'Device supports low priority scan.',
+              'Device supports scan flush.',
+              'Device supports AP scan.',
+              'Device supports per-vif TX power setting',
+              'Driver supports full state transitions for AP/GO clients',
+              'Driver supports a userspace MPM',
+              'Device supports active monitor (which will ACK incoming frames)',
+              'Device supports configuring vdev MAC-addr on create.',
+              'max # scan plans: 1',
+              'max scan plan interval: -1',
+              'max scan plan iterations: 0'
+            ],
+            supported_tx_frame_types: [
+              'IBSS: 0x00 0x10 0x20 0x30 0x40 0x50 0x60 0x70 0x80 0x90 0xa0 0xb0 0xc0 0xd0 0xe0 0xf0',
+              'managed: 0x00 0x10 0x20 0x30 0x40 0x50 0x60 0x70 0x80 0x90 0xa0 0xb0 0xc0 0xd0 0xe0 0xf0',
+              'AP: 0x00 0x10 0x20 0x30 0x40 0x50 0x60 0x70 0x80 0x90 0xa0 0xb0 0xc0 0xd0 0xe0 0xf0',
+              'AP/VLAN: 0x00 0x10 0x20 0x30 0x40 0x50 0x60 0x70 0x80 0x90 0xa0 0xb0 0xc0 0xd0 0xe0 0xf0',
+              'mesh point: 0x00 0x10 0x20 0x30 0x40 0x50 0x60 0x70 0x80 0x90 0xa0 0xb0 0xc0 0xd0 0xe0 0xf0',
+              'P2P-client: 0x00 0x10 0x20 0x30 0x40 0x50 0x60 0x70 0x80 0x90 0xa0 0xb0 0xc0 0xd0 0xe0 0xf0',
+              'P2P-GO: 0x00 0x10 0x20 0x30 0x40 0x50 0x60 0x70 0x80 0x90 0xa0 0xb0 0xc0 0xd0 0xe0 0xf0',
+              'P2P-device: 0x00 0x10 0x20 0x30 0x40 0x50 0x60 0x70 0x80 0x90 0xa0 0xb0 0xc0 0xd0 0xe0 0xf0'
+            ],
+            supported_rx_frame_types: [
+              'IBSS: 0x40 0xb0 0xc0 0xd0',
+              'managed: 0x40 0xb0 0xd0',
+              'AP: 0x00 0x20 0x40 0xa0 0xb0 0xc0 0xd0',
+              'AP/VLAN: 0x00 0x20 0x40 0xa0 0xb0 0xc0 0xd0',
+              'mesh point: 0xb0 0xc0 0xd0',
+              'P2P-client: 0x40 0xd0',
+              'P2P-GO: 0x00 0x20 0x40 0xa0 0xb0 0xc0 0xd0',
+              'P2P-device: 0x40 0xd0'
+            ],
+            supported_extended_features: [
+              '[ VHT_IBSS ]: VHT-IBSS',
+              '[ RRM ]: RRM',
+              '[ RADAR_BACKGROUND ]: Radar background support',
+              '[ FILS_STA ]: STA FILS (Fast Initial Link Setup)',
+              '[ CQM_RSSI_LIST ]: multiple CQM_RSSI_THOLD records',
+              '[ CONTROL_PORT_OVER_NL80211 ]: control port over nl80211',
+              '[ TXQS ]: FQ-CoDel-enabled intermediate TXQs',
+              '[ AIRTIME_FAIRNESS ]: airtime fairness scheduling',
+              '[ AQL ]: Airtime Queue Limits (AQL)',
+              '[ SCAN_RANDOM_SN ]: use random sequence numbers in scans',
+              '[ SCAN_MIN_PREQ_CONTENT ]: use probe request with only rate IEs in scans',
+              '[ CONTROL_PORT_NO_PREAUTH ]: disable pre-auth over nl80211 control port support',
+              '[ DEL_IBSS_STA ]: deletion of IBSS station support',
+              '[ SCAN_FREQ_KHZ ]: scan on kHz frequency support',
+              '[ CONTROL_PORT_OVER_NL80211_TX_STATUS ]: tx status for nl80211 control port support'
+            ]
+          },
+          {
+            wiphy: 'phy1',
+            wiphy_index: 1,
+            max_scan_ssids: 10,
+            max_scan_ies_length: '2048 bytes',
+            max_sched_scan_ssids: 16,
+            max_match_sets: 16,
+            retry_short_limit: 7,
+            retry_long_limit: 4,
+            coverage_class: '0 (up to 0m)',
+            device_supports: ['roaming', 'T-DLS'],
+            supported_ciphers: [
+              'WEP40 (00-0f-ac:1)',
+              'WEP104 (00-0f-ac:5)',
+              'TKIP (00-0f-ac:2)',
+              'CCMP-128 (00-0f-ac:4)',
+              'CMAC (00-0f-ac:6)',
+              'Available Antennas: TX 0 RX 0'
+            ],
+            bands: [
+              {
+                band: 'Band 1',
+                frequencies: [
+                  '2412 MHz [1] (20.0 dBm)',
+                  '2437 MHz [6] (20.0 dBm)',
+                  '2462 MHz [11] (20.0 dBm)'
+                ],
+                he_phy_capabilities: ['HE20/HE40'],
+                eht_phy_capabilities: ['EHT20/40'],
+                capabilities: [
+                  '0x1062',
+                  'HT20/HT40',
+                  'Static SM Power Save',
+                  'RX HT20 SGI',
+                  'RX HT40 SGI',
+                  'No RX STBC',
+                  'Max AMSDU length: 3839 bytes',
+                  'DSSS/CCK HT40',
+                  'Maximum RX AMPDU length 65535 bytes (exponent: 0x003)',
+                  'Minimum RX AMPDU time spacing: 16 usec (0x07)',
+                  'HT TX/RX MCS rate indexes supported: 0-7'
+                ],
+                bitrates: [
+                  '1.0 Mbps',
+                  '2.0 Mbps (short preamble supported)',
+                  '5.5 Mbps (short preamble supported)',
+                  '11.0 Mbps (short preamble supported)',
+                  '6.0 Mbps',
+                  '9.0 Mbps',
+                  '12.0 Mbps',
+                  '18.0 Mbps',
+                  '24.0 Mbps',
+                  '36.0 Mbps',
+                  '48.0 Mbps',
+                  '54.0 Mbps'
+                ]
+              },
+              {
+                band: 'Band 2',
+                frequencies: [
+                  '5170 MHz [34] (disabled)',
+                  '5180 MHz [36] (20.0 dBm)',
+                  '5190 MHz [38] (disabled)',
+                  '5200 MHz [40] (20.0 dBm)',
+                  '5210 MHz [42] (disabled)',
+                  '5220 MHz [44] (20.0 dBm)',
+                  '5230 MHz [46] (disabled)',
+                  '5240 MHz [48] (20.0 dBm)',
+                  '5260 MHz [52] (20.0 dBm) (no IR, radar detection)',
+                  '5280 MHz [56] (20.0 dBm) (no IR, radar detection)',
+                  '5300 MHz [60] (20.0 dBm) (no IR, radar detection)',
+                  '5320 MHz [64] (20.0 dBm) (no IR, radar detection)',
+                  '5500 MHz [100] (20.0 dBm) (no IR, radar detection)',
+                  '5520 MHz [104] (20.0 dBm) (no IR, radar detection)',
+                  '5540 MHz [108] (20.0 dBm) (no IR, radar detection)',
+                  '5560 MHz [112] (20.0 dBm) (no IR, radar detection)',
+                  '5580 MHz [116] (20.0 dBm) (no IR, radar detection)',
+                  '5600 MHz [120] (20.0 dBm) (no IR, radar detection)',
+                  '5620 MHz [124] (20.0 dBm) (no IR, radar detection)',
+                  '5640 MHz [128] (20.0 dBm) (no IR, radar detection)',
+                  '5660 MHz [132] (20.0 dBm) (no IR, radar detection)',
+                  '5680 MHz [136] (20.0 dBm) (no IR, radar detection)',
+                  '5700 MHz [140] (20.0 dBm) (no IR, radar detection)',
+                  '5720 MHz [144] (20.0 dBm) (no IR, radar detection)',
+                  '5745 MHz [149] (20.0 dBm)',
+                  '5765 MHz [153] (20.0 dBm)',
+                  '5785 MHz [157] (20.0 dBm)',
+                  '5805 MHz [161] (20.0 dBm)',
+                  '5825 MHz [165] (20.0 dBm)'
+                ],
+                capabilities: [
+                  '0x1062',
+                  'HT20/HT40',
+                  'Static SM Power Save',
+                  'RX HT20 SGI',
+                  'RX HT40 SGI',
+                  'No RX STBC',
+                  'Max AMSDU length: 3839 bytes',
+                  'DSSS/CCK HT40',
+                  'Maximum RX AMPDU length 65535 bytes (exponent: 0x003)',
+                  'Minimum RX AMPDU time spacing: 16 usec (0x07)',
+                  'HT TX/RX MCS rate indexes supported: 0-7'
+                ],
+                vht_capabilities: [
+                  'Max MPDU length: 3895',
+                  'Supported Channel Width: 160 MHz',
+                  'short GI (80 MHz)',
+                  'SU Beamformee'
+                ],
+                he_phy_capabilities: ['HE20/40/80/160'],
+                eht_phy_capabilities: ['EHT20/40/80/160'],
+                vht_rx_mcs_set: [
+                  '1 streams: MCS 0-9',
+                  '2 streams: not supported',
+                  '3 streams: not supported',
+                  '4 streams: not supported',
+                  '5 streams: not supported',
+                  '6 streams: not supported',
+                  '7 streams: not supported',
+                  '8 streams: not supported',
+                  'VHT RX highest supported: 0 Mbps'
+                ],
+                vht_tx_mcs_set: [
+                  '1 streams: MCS 0-9',
+                  '2 streams: not supported',
+                  '3 streams: not supported',
+                  '4 streams: not supported',
+                  '5 streams: not supported',
+                  '6 streams: not supported',
+                  '7 streams: not supported',
+                  '8 streams: not supported',
+                  'VHT TX highest supported: 0 Mbps'
+                ],
+                bitrates: [
+                  '6.0 Mbps',
+                  '9.0 Mbps',
+                  '12.0 Mbps',
+                  '18.0 Mbps',
+                  '24.0 Mbps',
+                  '36.0 Mbps',
+                  '48.0 Mbps',
+                  '54.0 Mbps'
+                ]
+              },
+              {
+                band: 'Band 4',
+                frequencies: [
+                  '5975 MHz [5] (23.0 dBm)',
+                  '6055 MHz [21] (23.0 dBm)',
+                  '6135 MHz [37] (23.0 dBm)',
+                  '6215 MHz [53] (23.0 dBm)',
+                  '6295 MHz [69] (23.0 dBm)',
+                  '6375 MHz [85] (23.0 dBm)',
+                  '6695 MHz [149] (23.0 dBm)'
+                ],
+                he_phy_capabilities: ['HE20/40/80/160'],
+                eht_phy_capabilities: ['EHT20/40/80/160/320']
+              }
+            ],
+            supported_interface_modes: [
+              'IBSS',
+              'managed',
+              'AP',
+              'P2P-client',
+              'P2P-GO',
+              'P2P-device'
+            ],
+            supported_commands: [
+              'new_interface',
+              'set_interface',
+              'new_key',
+              'start_ap',
+              'join_ibss',
+              'set_pmksa',
+              'del_pmksa',
+              'flush_pmksa',
+              'remain_on_channel',
+              'frame',
+              'set_wiphy_netns',
+              'set_channel',
+              'tdls_oper',
+              'start_sched_scan',
+              'start_p2p_device',
+              'connect',
+              'disconnect',
+              'crit_protocol_start',
+              'crit_protocol_stop',
+              'update_connect_params'
+            ],
+            valid_interface_combinations: [
+              '#{ managed } <= 1, #{ P2P-device } <= 1, #{ P2P-client, P2P-GO } <= 1,',
+              'total <= 3, #channels <= 2',
+              '#{ managed } <= 1, #{ AP } <= 1, #{ P2P-client } <= 1, #{ P2P-device } <= 1,',
+              'total <= 4, #channels <= 1',
+              'Device supports scan flush.',
+              'Device supports randomizing MAC-addr in sched scans.',
+              'max # scan plans: 1',
+              'max scan plan interval: 508',
+              'max scan plan iterations: 0'
+            ],
+            supported_tx_frame_types: [
+              'managed: 0x00 0x10 0x20 0x30 0x40 0x50 0x60 0x70 0x80 0x90 0xa0 0xb0 0xc0 0xd0 0xe0 0xf0',
+              'AP: 0x00 0x10 0x20 0x30 0x40 0x50 0x60 0x70 0x80 0x90 0xa0 0xb0 0xc0 0xd0 0xe0 0xf0',
+              'P2P-client: 0x00 0x10 0x20 0x30 0x40 0x50 0x60 0x70 0x80 0x90 0xa0 0xb0 0xc0 0xd0 0xe0 0xf0',
+              'P2P-GO: 0x00 0x10 0x20 0x30 0x40 0x50 0x60 0x70 0x80 0x90 0xa0 0xb0 0xc0 0xd0 0xe0 0xf0',
+              'P2P-device: 0x00 0x10 0x20 0x30 0x40 0x50 0x60 0x70 0x80 0x90 0xa0 0xb0 0xc0 0xd0 0xe0 0xf0'
+            ],
+            supported_rx_frame_types: [
+              'managed: 0x40 0xd0',
+              'AP: 0x00 0x20 0x40 0xa0 0xb0 0xc0 0xd0',
+              'P2P-client: 0x40 0xd0',
+              'P2P-GO: 0x00 0x20 0x40 0xa0 0xb0 0xc0 0xd0',
+              'P2P-device: 0x40 0xd0'
+            ],
+            supported_extended_features: [
+              '[ VHT_IBSS ]: VHT-IBSS',
+              '[ RRM ]: RRM',
+              '[ RADAR_BACKGROUND ]: Radar background support',
+              '[ FILS_STA ]: STA FILS (Fast Initial Link Setup)',
+              '[ CQM_RSSI_LIST ]: multiple CQM_RSSI_THOLD records',
+              '[ CONTROL_PORT_OVER_NL80211 ]: control port over nl80211',
+              '[ TXQS ]: FQ-CoDel-enabled intermediate TXQs',
+              '[ AIRTIME_FAIRNESS ]: airtime fairness scheduling',
+              '[ AQL ]: Airtime Queue Limits (AQL)',
+              '[ SCAN_RANDOM_SN ]: use random sequence numbers in scans',
+              '[ SCAN_MIN_PREQ_CONTENT ]: use probe request with only rate IEs in scans',
+              '[ CONTROL_PORT_NO_PREAUTH ]: disable pre-auth over nl80211 control port support',
+              '[ DEL_IBSS_STA ]: deletion of IBSS station support',
+              '[ SCAN_FREQ_KHZ ]: scan on kHz frequency support',
+              '[ CONTROL_PORT_OVER_NL80211_TX_STATUS ]: tx status for nl80211 control port support'
+            ]
+          },
+          {
+            wiphy: 'phy2',
+            wiphy_index: 2,
+            max_scan_ssids: 4,
+            max_scan_ies_length: '2243 bytes',
+            max_sched_scan_ssids: 0,
+            max_match_sets: 0,
+            retry_short_limit: 7,
+            retry_long_limit: 4,
+            coverage_class: '0 (up to 0m)',
+            device_supports: ['RSN-IBSS', 'AP-side u-APSD', 'T-DLS'],
+            supported_ciphers: [
+              'WEP40 (00-0f-ac:1)',
+              'WEP104 (00-0f-ac:5)',
+              'TKIP (00-0f-ac:2)',
+              'CCMP-128 (00-0f-ac:4)',
+              'CCMP-256 (00-0f-ac:10)',
+              //'GCMP-128 (00-0f-ac:8)',
+              'GCMP-256 (00-0f-ac:9)',
+              'CMAC (00-0f-ac:6)',
+              'CMAC-256 (00-0f-ac:13)',
+              'GMAC-128 (00-0f-ac:11)',
+              'GMAC-256 (00-0f-ac:12)',
+              'Available Antennas: TX 0x3 RX 0x3',
+              'Configured Antennas: TX 0x3 RX 0x3'
+            ],
+            bands: [
+              {
+                band: 'Band 1',
+                capabilities: [
+                  '0x1ff',
+                  'RX LDPC',
+                  'HT20/HT40',
+                  'SM Power Save disabled',
+                  'RX Greenfield',
+                  'RX HT20 SGI',
+                  'RX HT40 SGI',
+                  'TX STBC',
+                  'RX STBC 1-stream',
+                  'Max AMSDU length: 3839 bytes',
+                  'No DSSS/CCK HT40',
+                  'Maximum RX AMPDU length 65535 bytes (exponent: 0x003)',
+                  'Minimum RX AMPDU time spacing: No restriction (0x00)',
+                  'HT TX/RX MCS rate indexes supported: 0-15'
+                ],
+                bitrates: [
+                  '1.0 Mbps (short preamble supported)',
+                  '2.0 Mbps (short preamble supported)',
+                  '5.5 Mbps (short preamble supported)',
+                  '11.0 Mbps (short preamble supported)',
+                  '6.0 Mbps',
+                  '9.0 Mbps',
+                  '12.0 Mbps',
+                  '18.0 Mbps',
+                  '24.0 Mbps',
+                  '36.0 Mbps',
+                  '48.0 Mbps',
+                  '54.0 Mbps'
+                ]
+              },
+              {
+                band: 'Band 2',
+                frequencies: [
+                  '5180 MHz [36] (18.0 dBm)',
+                  '5200 MHz [40] (18.0 dBm)',
+                  '5220 MHz [44] (18.0 dBm)',
+                  '5240 MHz [48] (18.0 dBm)',
+                  '5260 MHz [52] (18.0 dBm) (radar detection)',
+                  '5280 MHz [56] (18.0 dBm) (radar detection)',
+                  '5300 MHz [60] (18.0 dBm) (radar detection)',
+                  '5320 MHz [64] (18.0 dBm) (radar detection)',
+                  '5500 MHz [100] (18.0 dBm) (radar detection)',
+                  '5520 MHz [104] (18.0 dBm) (radar detection)',
+                  '5540 MHz [108] (18.0 dBm) (radar detection)',
+                  '5560 MHz [112] (18.0 dBm) (radar detection)',
+                  '5580 MHz [116] (18.0 dBm) (radar detection)',
+                  '5600 MHz [120] (18.0 dBm) (radar detection)',
+                  '5620 MHz [124] (18.0 dBm) (radar detection)',
+                  '5640 MHz [128] (18.0 dBm) (radar detection)',
+                  '5660 MHz [132] (18.0 dBm) (radar detection)',
+                  '5680 MHz [136] (18.0 dBm) (radar detection)',
+                  '5700 MHz [140] (18.0 dBm) (radar detection)',
+                  '5720 MHz [144] (18.0 dBm) (radar detection)',
+                  '5745 MHz [149] (18.0 dBm)',
+                  '5765 MHz [153] (18.0 dBm)',
+                  '5785 MHz [157] (18.0 dBm)',
+                  '5805 MHz [161] (18.0 dBm)',
+                  '5825 MHz [165] (18.0 dBm)',
+                  '5845 MHz [169] (18.0 dBm) (no IR)',
+                  '5865 MHz [173] (18.0 dBm) (no IR)'
+                ],
+                capabilities: [
+                  '0x1ff',
+                  'RX LDPC',
+                  'HT20/HT40',
+                  'SM Power Save disabled',
+                  'RX Greenfield',
+                  'RX HT20 SGI',
+                  'RX HT40 SGI',
+                  'TX STBC',
+                  'RX STBC 1-stream',
+                  'Max AMSDU length: 3839 bytes',
+                  'No DSSS/CCK HT40',
+                  'Maximum RX AMPDU length 65535 bytes (exponent: 0x003)',
+                  'Minimum RX AMPDU time spacing: No restriction (0x00)',
+                  'HT TX/RX MCS rate indexes supported: 0-15'
+                ],
+                vht_capabilities: [
+                  'Max MPDU length: 3895',
+                  'Supported Channel Width: neither 160 nor 80+80',
+                  'RX LDPC',
+                  'short GI (80 MHz)',
+                  'TX STBC',
+                  'RX antenna pattern consistency',
+                  'TX antenna pattern consistency'
+                ],
+                vht_rx_mcs_set: [
+                  '1 streams: MCS 0-9',
+                  '2 streams: MCS 0-9',
+                  '3 streams: not supported',
+                  '4 streams: not supported',
+                  '5 streams: not supported',
+                  '6 streams: not supported',
+                  '7 streams: not supported',
+                  '8 streams: not supported',
+                  'VHT RX highest supported: 0 Mbps'
+                ],
+                vht_tx_mcs_set: [
+                  '1 streams: MCS 0-9',
+                  '2 streams: MCS 0-9',
+                  '3 streams: not supported',
+                  '4 streams: not supported',
+                  '5 streams: not supported',
+                  '6 streams: not supported',
+                  '7 streams: not supported',
+                  '8 streams: not supported',
+                  'VHT TX highest supported: 0 Mbps'
+                ],
+                bitrates: [
+                  '6.0 Mbps',
+                  '9.0 Mbps',
+                  '12.0 Mbps',
+                  '18.0 Mbps',
+                  '24.0 Mbps',
+                  '36.0 Mbps',
+                  '48.0 Mbps',
+                  '54.0 Mbps'
+                ]
+              }
+            ],
+            supported_interface_modes: [
+              'IBSS',
+              'managed',
+              'AP',
+              'AP/VLAN',
+              'monitor',
+              'mesh point',
+              'P2P-client',
+              'P2P-GO'
+            ],
+            supported_commands: [
+              'new_interface',
+              'set_interface',
+              'new_key',
+              'start_ap',
+              'new_station',
+              'new_mpath',
+              'set_mesh_config',
+              'set_bss',
+              'authenticate',
+              'associate',
+              'deauthenticate',
+              'disassociate',
+              'join_ibss',
+              'join_mesh',
+              'remain_on_channel',
+              'set_tx_bitrate_mask',
+              'frame',
+              'frame_wait_cancel',
+              'set_wiphy_netns',
+              'set_channel',
+              'tdls_mgmt',
+              'tdls_oper',
+              'probe_client',
+              'set_noack_map',
+              'register_beacons',
+              'start_p2p_device',
+              'set_mcast_rate',
+              'connect',
+              'disconnect',
+              'channel_switch',
+              'set_qos_map',
+              'set_multicast_to_unicast'
+            ],
+            software_interface_modes: ['AP/VLAN', 'monitor'],
+            valid_interface_combinations: [
+              '#{ IBSS } <= 1, #{ managed, AP, mesh point, P2P-client, P2P-GO } <= 2,',
+              'total <= 2, #channels <= 1, STA/AP BI must match'
+            ],
+            ht_capability_overrides: [
+              'MCS: ff ff ff ff ff ff ff ff ff ff',
+              'maximum A-MSDU length',
+              'supported channel width',
+              'short GI for 40 MHz',
+              'max A-MPDU length exponent',
+              'min MPDU start spacing',
+              'Device supports TX status socket option.',
+              'Device supports HT-IBSS.',
+              'Device supports SAE with AUTHENTICATE command',
+              'Device supports low priority scan.',
+              'Device supports scan flush.',
+              'Device supports AP scan.',
+              'Device supports per-vif TX power setting',
+              'Driver supports full state transitions for AP/GO clients',
+              'Driver supports a userspace MPM',
+              'Device supports active monitor (which will ACK incoming frames)',
+              'Device supports configuring vdev MAC-addr on create.',
+              'max # scan plans: 1',
+              'max scan plan interval: -1',
+              'max scan plan iterations: 0'
+            ],
+            supported_tx_frame_types: [
+              'IBSS: 0x00 0x10 0x20 0x30 0x40 0x50 0x60 0x70 0x80 0x90 0xa0 0xb0 0xc0 0xd0 0xe0 0xf0',
+              'managed: 0x00 0x10 0x20 0x30 0x40 0x50 0x60 0x70 0x80 0x90 0xa0 0xb0 0xc0 0xd0 0xe0 0xf0',
+              'AP: 0x00 0x10 0x20 0x30 0x40 0x50 0x60 0x70 0x80 0x90 0xa0 0xb0 0xc0 0xd0 0xe0 0xf0',
+              'AP/VLAN: 0x00 0x10 0x20 0x30 0x40 0x50 0x60 0x70 0x80 0x90 0xa0 0xb0 0xc0 0xd0 0xe0 0xf0',
+              'mesh point: 0x00 0x10 0x20 0x30 0x40 0x50 0x60 0x70 0x80 0x90 0xa0 0xb0 0xc0 0xd0 0xe0 0xf0',
+              'P2P-client: 0x00 0x10 0x20 0x30 0x40 0x50 0x60 0x70 0x80 0x90 0xa0 0xb0 0xc0 0xd0 0xe0 0xf0',
+              'P2P-GO: 0x00 0x10 0x20 0x30 0x40 0x50 0x60 0x70 0x80 0x90 0xa0 0xb0 0xc0 0xd0 0xe0 0xf0',
+              'P2P-device: 0x00 0x10 0x20 0x30 0x40 0x50 0x60 0x70 0x80 0x90 0xa0 0xb0 0xc0 0xd0 0xe0 0xf0'
+            ],
+            supported_rx_frame_types: [
+              'IBSS: 0x40 0xb0 0xc0 0xd0',
+              'managed: 0x40 0xb0 0xd0',
+              'AP: 0x00 0x20 0x40 0xa0 0xb0 0xc0 0xd0',
+              'AP/VLAN: 0x00 0x20 0x40 0xa0 0xb0 0xc0 0xd0',
+              'mesh point: 0xb0 0xc0 0xd0',
+              'P2P-client: 0x40 0xd0',
+              'P2P-GO: 0x00 0x20 0x40 0xa0 0xb0 0xc0 0xd0',
+              'P2P-device: 0x40 0xd0'
+            ],
+            supported_extended_features: [
+              '[ VHT_IBSS ]: VHT-IBSS',
+              '[ RRM ]: RRM',
+              '[ RADAR_BACKGROUND ]: Radar background support',
+              '[ FILS_STA ]: STA FILS (Fast Initial Link Setup)',
+              '[ CQM_RSSI_LIST ]: multiple CQM_RSSI_THOLD records',
+              '[ CONTROL_PORT_OVER_NL80211 ]: control port over nl80211',
+              '[ TXQS ]: FQ-CoDel-enabled intermediate TXQs',
+              '[ AIRTIME_FAIRNESS ]: airtime fairness scheduling',
+              '[ AQL ]: Airtime Queue Limits (AQL)',
+              '[ SCAN_RANDOM_SN ]: use random sequence numbers in scans',
+              '[ SCAN_MIN_PREQ_CONTENT ]: use probe request with only rate IEs in scans',
+              '[ CONTROL_PORT_NO_PREAUTH ]: disable pre-auth over nl80211 control port support',
+              '[ DEL_IBSS_STA ]: deletion of IBSS station support',
+              '[ SCAN_FREQ_KHZ ]: scan on kHz frequency support',
+              '[ CONTROL_PORT_OVER_NL80211_TX_STATUS ]: tx status for nl80211 control port support'
+            ]
+          }
+        ]
+      })
+
+      this.get('/features', () => {
+        return ['dns', 'wifi', 'ppp', 'wireguard']
+      })
+
+      this.get('/featureFlags', () => {
+        return mockFeatureFlags
+      })
+
+      this.put('/featureFlags', (schema, request) => {
+        const requested = JSON.parse(request.requestBody)
+        if (
+          !Array.isArray(requested) ||
+          requested.some(
+            (flag) => !mockSupportedFeatureFlags.includes(flag)
+          )
+        ) {
+          return new Response(400, {}, { error: 'unsupported feature flag' })
+        }
+
+        mockFeatureFlags = mockSupportedFeatureFlags.filter((flag) =>
+          requested.includes(flag)
+        )
+        return mockFeatureFlags
+      })
+
+      this.get('/version', () => {
+        return '"1.1"'
+      })
+
+      this.get('/dockerPS', () => {
+        return '{"Command":"\\"/bin/sh -c /scripts…\\"","CreatedAt":"2024-10-07 18:31:59 +0000 UTC","ExitCode":0,"Health":"","ID":"a720a74de915","Image":"ghcr.io/spr-networks/super_wifid:latest","Labels":"org.supernetworks.ci=true,org.supernetworks.version=1.0.0,com.docker.compose.config-hash=4e49328bc88bfe331c914d70a838bfd858fe425dc050e2304790a97c8146cf2b,com.docker.compose.container-number=1,com.docker.compose.oneoff=False,com.docker.compose.project=super,com.docker.compose.replace=da075df406ce9c78f57cdecd96f827d78ce5c765d337ce3e08c469f97a5310d9,com.docker.compose.version=2.29.1,com.docker.compose.depends_on=api:service_started:false,dhcp:service_started:false,multicast_udp_proxy:service_started:false,com.docker.compose.image=sha256:70e6e4accc180149637409c8c41062cb8e51a3dda74e1b2c22c4884a4920cf70,com.docker.compose.project.config_files=/home/spr/super/docker-compose.yml,com.docker.compose.project.working_dir=/home/spr/super,com.docker.compose.service=wifid","LocalVolumes":"0","Mounts":"/home/spr/supe…,/home/spr/supe…,/home/spr/supe…","Name":"superwifid","Names":"superwifid","Networks":"host","Ports":"","Project":"super","Publishers":[],"RunningFor":"26 hours ago","Service":"wifid","Size":"0B","State":"running","Status":"Up 26 minutes"}\n'
+      })
+
+      this.get('/info/hostname', () => {
+        return '"ubuntu"'
+      })
+
+      this.get('/info/uptime', () => {
+        return {
+          time: '12:16:37',
+          uptime: '11 days, 5:52',
+          users: 0,
+          load_1m: 0.17,
+          load_5m: 0.12,
+          load_15m: 0.04,
+          time_hour: 12,
+          time_minute: 16,
+          time_second: 37,
+          uptime_days: 11,
+          uptime_hours: 5,
+          uptime_minutes: 52,
+          uptime_total_seconds: 971520
+        }
+      })
+
+      this.get('/info/docker', () => {
+        return [
+          {
+            Id: 'abc123def456',
+            Names: ['/spr-mitmproxy'],
+            State: 'running',
+            NetworkSettings: {
+              Networks: {
+                'spr-mitmproxy_mitmnet': { IPAddress: '172.20.0.2' }
+              }
+            }
+          },
+          {
+            Id: 'def456abc789',
+            Names: ['/superplugin-lookup'],
+            State: 'running',
+            NetworkSettings: {
+              Networks: {
+                bridge: { IPAddress: '172.17.0.3' }
+              }
+            }
+          },
+          {
+            Id: 'fedcba987654',
+            Names: ['/superdyndns'],
+            State: 'running',
+            NetworkSettings: {
+              Networks: {
+                bridge: { IPAddress: '172.17.0.5' }
+              }
+            }
+          }
+        ]
+      })
+
+      this.get('/info/vms', () => {
+        return {
+          Discovery: 'kvm-debugfs',
+          KVMAvailable: true,
+          ContainerMetadataAvailable: true,
+          VirtualMachines: [
+            {
+              ID: '12345-7',
+              PID: 12345,
+              Name: 'spr-atlas',
+              State: 'running',
+              Container: true,
+              Runtime: 'spr-krun',
+              Image: 'ghcr.io/spr-networks/spr-atlas:latest-krun',
+              CPUs: 1,
+              MemoryMiB: 128
+            }
+          ]
+        }
+      })
+
+      this.put('/backup', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        let version = '"v0.1.0-beta.0'
+        let backup = {
+          Name: `spr-configs-${version}.tgz`,
+          Timestamp: Date.now()
+        }
+
+        schema.backups.create(backup)
+
+        return JSON.stringify(backup.Name)
+      })
+
+      this.get('/backup', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        return schema.backups.all().models
+      })
+
+      this.del('/backup/:name', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        let id = request.params.name
+        return schema.backups.findBy({ Name: id }).destroy()
+      })
+      ////
+
+      this.get('/iw/dev', (schema) => {
+        return {
+          phy1: {
+            'wlan1.4103': {
+              ifindex: '62',
+              wdev: '0x9',
+              addr: '44:a5:6e:63:c5:f2',
+              type: 'AP/VLAN',
+              channel: '36 (5180 MHz), width: 80 MHz, center1: 5210 MHz',
+              txpower: '18.00 dBm'
+            },
+            wlan1: {
+              ifindex: '4',
+              wdev: '0x1',
+              addr: '44:a5:6e:63:c5:f2',
+              ssid: 'TestAP',
+              type: 'AP',
+              channel: '36 (5180 MHz), width: 80 MHz, center1: 5210 MHz',
+              txpower: '18.00 dBm',
+              multicast_txq: {
+                qsz_byt: 0,
+                qsz_pkt: 0,
+                flows: 0,
+                drops: 0,
+                marks: 0,
+                overlmt: 0,
+                hashcol: 0,
+                tx_bytes: 0,
+                tx_packets: 0
+              }
+            }
+          },
+          phy0: {
+            wlan0: {
+              ifindex: '3',
+              wdev: '0x100000001',
+              addr: 'e4:5f:01:3c:4b:77',
+              type: 'managed',
+              channel: '36 (5180 MHz), width: 20 MHz, center1: 5180 MHz',
+              txpower: '31.00 dBm'
+            }
+          },
+          phy2: {
+            wlan2: {
+              ifindex: '5',
+              wdev: '0x1',
+              addr: '44:a5:6e:63:c5:f3',
+              type: 'managed',
+              channel: '36 (5180 MHz), width: 80 MHz, center1: 5210 MHz',
+              txpower: '18.00 dBm'
+            }
+          }
+        }
+      })
+
+      this.get('/iw/dev/:iface/scan', (schema, request) => {
+        let iface = request.params.iface
+
+        return [
+          {
+            bssid: '33:33:33:33:33:33',
+            interface: iface,
+            freq: 2412,
+            capability: 'ESS Privacy ShortSlotTime RadioMeasure (0x1411)',
+            ssid: 'ssid_AABBCC',
+            supported_rates: [1, 2, 5.5, 11, 18, 24, 36, 54],
+            erp: '<no flags>',
+            'erp_d4.0': '<no flags>',
+            rsn: 'Version: 1',
+            group_cipher: 'CCMP',
+            pairwise_ciphers: 'CCMP',
+            authentication_suites: 'PSK',
+            capabilities: '0x72 0x08 0x01 0x00 0x00',
+            extended_supported_rates: [6, 9, 12, 48],
+            station_count: 1,
+            channel_utilisation: '87/255',
+            available_admission_capacity: 0,
+            ht_rx_mcs_rate_indexes_supported: '0-23',
+            primary_channel: 1,
+            secondary_channel_offset: 'no secondary',
+            rifs: 1,
+            ht_protection: 'no',
+            non_gf_present: 1,
+            obss_non_gf_present: 0,
+            dual_beacon: 0,
+            dual_cts_protection: 0,
+            stbc_beacon: 0,
+            l_sig_txop_prot: 0,
+            pco_active: 0,
+            pco_phase: 0,
+            wps: 'Version: 1.0',
+            wi_fi_protected_setup_state: '2 (Configured)',
+            response_type: '3 (AP)',
+            uuid: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+            manufacturer: 'ABC',
+            model: 'ABCDEF',
+            model_number: 123456,
+            serial_number: 1,
+            primary_device_type: '1-00112233-2',
+            device_name: 'ABCdev',
+            config_methods: 'Display',
+            rf_bands: '0x3',
+            version2: 2,
+            wmm: 'Parameter version 1',
+            be: 'CW 15-1023, AIFSN 3',
+            bk: 'CW 15-1023, AIFSN 7',
+            vi: 'CW 7-15, AIFSN 2, TXOP 3008 usec',
+            vo: 'CW 3-7, AIFSN 2, TXOP 1504 usec',
+            nonoperating_channel_max_measurement_duration: 0,
+            measurement_pilot_capability: 0,
+            tsf_usec: 31442397148,
+            sta_channel_width_mhz: 20,
+            beacon_interval_tus: 100,
+            signal_dbm: -67,
+            last_seen_ms: 0,
+            selected_rates: [1, 2, 5.5, 11],
+            ds_parameter_set_channel: 1,
+            max_amsdu_length_bytes: 7935,
+            minimum_rx_ampdu_time_spacing_usec: 4
+          }
+        ]
+      })
+
+      this.get('/iptraffic', (schema) => {
+        const rIP = () => `${r(255)}.${r(255)}.${r(255)}.${r(255)}`
+        const rInterface = () => rpick(['wlan0', 'wlan.4096', 'wlan.4097'])
+
+        let ips = schema.devices.all().models.map((dev) => dev.RecentIP)
+
+        let result = []
+        for (let x = 0; x < 1024; x++) {
+          let Interface = rInterface()
+          let Src = rpick(ips)
+          let Dst = ['wlan0'].includes(Interface) ? rpick(ips) : rIP()
+
+          let row = {
+            Interface,
+            Src,
+            Dst,
+            Packets: r(4096),
+            Bytes: r(1e6)
+          }
+
+          result.push(row)
+        }
+
+        return result
+      })
+
+      this.get('/traffic/incoming_traffic_wan', (schema) => {
+        return [
+          { IP: '192.168.2.101', Packets: 1796468, Bytes: 2203937574 },
+          { IP: '192.168.2.102', Packets: 326682, Bytes: 417682716 }
+        ]
+      })
+
+      this.get('/traffic/outgoing_traffic_wan', (schema) => {
+        return [
+          { IP: '192.168.2.101', Packets: 428534, Bytes: 62337288 },
+          { IP: '192.168.2.102', Packets: 157634, Bytes: 20972708 }
+        ]
+      })
+
+      this.get('/traffic/incoming_traffic_lan', (schema) => {
+        return [
+          { IP: '192.168.2.101', Packets: 1, Bytes: 84 },
+          { IP: '192.168.2.102', Packets: 2, Bytes: 168 }
+        ]
+      })
+
+      this.get('/traffic/outgoing_traffic_lan', (schema) => {
+        return [
+          { IP: '192.168.2.101', Packets: 4, Bytes: 336 },
+          { IP: '192.168.2.102', Packets: 8, Bytes: 678 }
+        ]
+      })
+
+      this.get('/traffic_history', (schema) => {
+        const rSizeMB = (n = 1) => n * 1e6 + r(n) * r(1e6)
+        const rSizekB = () => 1e3 + r(1e3)
+        const rSizeb = () => r(1e3)
+        const rSize = () => (r(2) ? rSizeMB() : rSizekB())
+
+        let ips = schema.devices.all().models.map((dev) => dev.RecentIP)
+        ips = ips.slice(0, 6)
+        let result = []
+        for (let x = 0; x < 1024; x++) {
+          let serie = {}
+
+          for (let ip of ips) {
+            let small = [
+              '192.168.2.103',
+              '192.168.2.104',
+              '192.168.2.105'
+            ].includes(ip)
+
+            let large = ['192.168.2.102'].includes(ip) && x > 100 && x < 500
+
+            serie[ip] = {
+              LanIn: r(4) % 4 ? 0 : rSizeb(),
+              LanOut: rSizekB(),
+              WanIn: small ? rSizekB() : rSizeMB(large ? 10 + r(100) : r(5)),
+              WanOut: small ? rSizekB() : rSizeMB(r(5))
+            }
+          }
+
+          result.push(serie)
+        }
+
+        return result
+      })
+
+      this.get('/traffic_insights/config', () => mockTrafficInsightsConfig)
+
+      this.put('/traffic_insights/config', (schema, request) => {
+        mockTrafficInsightsConfig = JSON.parse(request.requestBody)
+        return mockTrafficInsightsConfig
+      })
+
+      this.get('/traffic_insights/overview', (schema, request) => {
+        let minutes = parseInt(request.queryParams.minutes || 1440)
+        let scale = Math.max(minutes / 60, 1)
+        let ips = schema.devices
+          .all()
+          .models.map((d) => d.RecentIP)
+          .slice(0, 4)
+
+        const mb = (n) => Math.round(n * scale * 1e6 + r(1e6))
+        const devs = (fracs) =>
+          fracs.map((f, i) => ({
+            IP: ips[i % ips.length],
+            BytesIn: mb(f * 40),
+            BytesOut: mb(f * 4)
+          }))
+
+        let Countries = [
+          {
+            Country: 'US',
+            BytesIn: mb(900),
+            BytesOut: mb(80),
+            Devices: [
+              ...devs([0.55, 0.3, 0.1]),
+              { IP: '172.17.0.3', BytesIn: mb(6), BytesOut: mb(40) },
+              { IP: '172.17.0.5', BytesIn: mb(2), BytesOut: mb(1) }
+            ],
+            ASNs: [
+              {
+                ASN: 15169,
+                Name: 'GOOGLE, US',
+                BytesIn: mb(400),
+                BytesOut: mb(30)
+              },
+              {
+                ASN: 16509,
+                Name: 'AMAZON-02, US',
+                BytesIn: mb(300),
+                BytesOut: mb(25)
+              },
+              {
+                ASN: 13335,
+                Name: 'CLOUDFLARENET, US',
+                BytesIn: mb(120),
+                BytesOut: mb(15)
+              }
+            ]
+          },
+          {
+            Country: 'DE',
+            BytesIn: mb(120),
+            BytesOut: mb(14),
+            Devices: devs([0.7, 0.3]),
+            ASNs: [
+              { ASN: 3320, Name: 'DTAG, DE', BytesIn: mb(80), BytesOut: mb(9) },
+              {
+                ASN: 24940,
+                Name: 'HETZNER-AS, DE',
+                BytesIn: mb(40),
+                BytesOut: mb(5)
+              }
+            ]
+          },
+          {
+            Country: 'AR',
+            BytesIn: mb(30),
+            BytesOut: mb(6),
+            Devices: devs([1]),
+            ASNs: [
+              {
+                ASN: 7303,
+                Name: 'Telecom Argentina S.A., AR',
+                BytesIn: mb(30),
+                BytesOut: mb(6)
+              }
+            ]
+          },
+          {
+            Country: '',
+            BytesIn: mb(4),
+            BytesOut: mb(1),
+            Devices: devs([1]),
+            ASNs: []
+          }
+        ]
+
+        let ASNs = [
+          { ASN: 15169, Name: 'GOOGLE, US', Country: 'US' },
+          { ASN: 16509, Name: 'AMAZON-02, US', Country: 'US' },
+          { ASN: 13335, Name: 'CLOUDFLARENET, US', Country: 'US' },
+          { ASN: 3320, Name: 'DTAG, DE', Country: 'DE' },
+          { ASN: 24940, Name: 'HETZNER-AS, DE', Country: 'DE' },
+          { ASN: 7303, Name: 'Telecom Argentina S.A., AR', Country: 'AR' }
+        ].map((a, i) => ({
+          ...a,
+          BytesIn: mb(400 / (i + 1)),
+          BytesOut: mb(40 / (i + 1)),
+          Devices: devs(i % 2 ? [0.8, 0.2] : [0.5, 0.3, 0.2])
+        }))
+
+        let TotalIn = Countries.reduce((s, c) => s + c.BytesIn, 0)
+        let TotalOut = Countries.reduce((s, c) => s + c.BytesOut, 0)
+
+        return {
+          Start: new Date(Date.now() - minutes * 60e3).toISOString(),
+          End: new Date().toISOString(),
+          TotalIn,
+          TotalOut,
+          Countries,
+          ASNs,
+          ContainerNets: ['172.17.0.0/16']
+        }
+      })
+
+      this.get('/traffic_insights/device/:ip', (schema, request) => {
+        let minutes = parseInt(request.queryParams.minutes || 1440)
+        let scale = Math.max(minutes / 60, 1)
+        const mb = (n) => Math.round(n * scale * 1e6 + r(1e6))
+        const seen = (m) => new Date(Date.now() - m * 60e3).toISOString()
+
+        let Destinations = [
+          {
+            IP: '142.250.72.14',
+            Domain: 'youtube.com',
+            ASN: 15169,
+            ASNName: 'GOOGLE, US',
+            Country: 'US',
+            BytesIn: mb(300),
+            BytesOut: mb(10),
+            LastSeen: seen(2)
+          },
+          {
+            IP: '151.101.1.140',
+            Domain: 'cdn.example.com',
+            ASN: 54113,
+            ASNName: 'FASTLY, US',
+            Country: 'US',
+            BytesIn: mb(120),
+            BytesOut: mb(8),
+            LastSeen: seen(12)
+          },
+          {
+            IP: '45.57.40.1',
+            Domain: 'netflix.com',
+            ASN: 2906,
+            ASNName: 'AS-SSI, US',
+            Country: 'US',
+            BytesIn: mb(90),
+            BytesOut: mb(3),
+            LastSeen: seen(45)
+          },
+          {
+            IP: '140.82.112.3',
+            Domain: 'github.com',
+            ASN: 36459,
+            ASNName: 'GITHUB, US',
+            Country: 'US',
+            BytesIn: mb(20),
+            BytesOut: mb(6),
+            LastSeen: seen(90)
+          },
+          {
+            IP: '116.203.30.100',
+            Domain: 'static.example.de',
+            ASN: 24940,
+            ASNName: 'HETZNER-AS, DE',
+            Country: 'DE',
+            BytesIn: mb(12),
+            BytesOut: mb(2),
+            LastSeen: seen(200)
+          },
+          {
+            IP: '181.30.128.1',
+            Domain: '',
+            ASN: 7303,
+            ASNName: 'Telecom Argentina S.A., AR',
+            Country: 'AR',
+            BytesIn: mb(3),
+            BytesOut: mb(1),
+            LastSeen: seen(600)
+          },
+          {
+            IP: '203.0.113.9',
+            Domain: '',
+            BytesIn: mb(2),
+            BytesOut: mb(1),
+            LastSeen: seen(700)
+          }
+        ]
+
+        return {
+          IP: request.params.ip,
+          BytesIn: Destinations.reduce((s, d) => s + d.BytesIn, 0),
+          BytesOut: Destinations.reduce((s, d) => s + d.BytesOut, 0),
+          Destinations
+        }
+      })
+
+      const mockGeoBlockStatus = () => {
+        let lists = mockGeoBlockConfig.Lists.filter((l) => l.Enabled)
+        let Sources = [
+          ...mockGeoBlockConfig.DenyCountries.map((cc) => ({
+            Type: 'country',
+            Key: cc,
+            Ranges: 4321
+          })),
+          ...mockGeoBlockConfig.DenyASNs.map((a) => ({
+            Type: 'asn',
+            Key: `AS${a.ASN}`,
+            Ranges: 10
+          })),
+          ...lists.map((l) => ({
+            Type: 'list',
+            Key: l.URI,
+            Ranges: 999,
+            ASNs: 42,
+            LastFetch: new Date(Date.now() - 3600e3).toISOString(),
+            Error: ''
+          }))
+        ]
+
+        return {
+          Enabled: mockGeoBlockConfig.Enabled,
+          LastRefresh: new Date(Date.now() - 3600e3).toISOString(),
+          RangesProgrammed: Sources.reduce((s, src) => s + src.Ranges, 0),
+          Sources
+        }
+      }
+
+      this.get('/firewall/geo_block/config', () => mockGeoBlockConfig)
+
+      this.put('/firewall/geo_block/config', (schema, request) => {
+        mockGeoBlockConfig = JSON.parse(request.requestBody)
+        return mockGeoBlockConfig
+      })
+
+      this.put('/firewall/geo_block/country/:cc', (schema, request) => {
+        let cc = request.params.cc.toUpperCase()
+        if (!mockGeoBlockConfig.DenyCountries.includes(cc)) {
+          mockGeoBlockConfig.DenyCountries.push(cc)
+        }
+        return mockGeoBlockConfig
+      })
+
+      this.delete('/firewall/geo_block/country/:cc', (schema, request) => {
+        let cc = request.params.cc.toUpperCase()
+        mockGeoBlockConfig.DenyCountries =
+          mockGeoBlockConfig.DenyCountries.filter((c) => c != cc)
+        return mockGeoBlockConfig
+      })
+
+      this.put('/firewall/geo_block/asn/:asn', (schema, request) => {
+        let asn = parseInt(request.params.asn)
+        if (!mockGeoBlockConfig.DenyASNs.map((a) => a.ASN).includes(asn)) {
+          let entry = mockASNTable.find((a) => a.ASN == asn)
+          mockGeoBlockConfig.DenyASNs.push({
+            ASN: asn,
+            Name: entry?.Name || `AS${asn}`
+          })
+        }
+        return mockGeoBlockConfig
+      })
+
+      this.delete('/firewall/geo_block/asn/:asn', (schema, request) => {
+        let asn = parseInt(request.params.asn)
+        mockGeoBlockConfig.DenyASNs = mockGeoBlockConfig.DenyASNs.filter(
+          (a) => a.ASN != asn
+        )
+        return mockGeoBlockConfig
+      })
+
+      this.get('/firewall/geo_block/status', () => mockGeoBlockStatus())
+
+      this.put('/firewall/geo_block/refresh', () => mockGeoBlockStatus())
+
+      const mockAllowlistStatus = () => ({
+        LastRefresh: new Date(Date.now() - 5 * 60e3).toISOString(),
+        Allowlists: mockAllowlistConfig.Allowlists.map((item) => ({
+          Name: item.Name,
+          Policy: `allowlist:${item.Name}`,
+          RangesProgrammed:
+            item.CIDRs.length + item.ASNs.length * 10 + item.Domains.length,
+          Sources: [
+            ...item.CIDRs.map((cidr) => ({ Type: 'cidr', Key: cidr, Ranges: 1 })),
+            ...item.ASNs.map((asn) => ({
+              Type: 'asn',
+              Key: `AS${asn.ASN}`,
+              Ranges: 10
+            })),
+            ...item.Domains.map((domain) => ({
+              Type: 'domain',
+              Key: domain,
+              Ranges: domain.startsWith('*.') ? 0 : 1,
+              Addresses: 1
+            }))
+          ]
+        }))
+      })
+
+      this.get('/firewall/allowlist/config', () => mockAllowlistConfig)
+      this.put('/firewall/allowlist/config', (schema, request) => {
+        mockAllowlistConfig = JSON.parse(request.requestBody)
+        return mockAllowlistConfig
+      })
+      this.get('/firewall/allowlist/status', () => mockAllowlistStatus())
+      this.put('/firewall/allowlist/refresh', () => mockAllowlistStatus())
+
+      this.get('/plugins/lookup/asn_search/:query', (schema, request) => {
+        let q = `${request.params.query}`.toLowerCase()
+        return mockASNTable
+          .filter(
+            (a) =>
+              a.Name.toLowerCase().includes(q) ||
+              `${a.ASN}`.includes(q.replace(/^as/, ''))
+          )
+          .slice(0, 25)
+      })
+
+      this.get('/notifications', (schema) => {
+        return [
+          {
+            Conditions: {
+              Prefix: 'nft:drop:forward',
+              Protocol: 'tcp',
+              DstIP: '',
+              DstPort: 0,
+              SrcIP: '',
+              SrcPort: 0
+            },
+            Notification: true
+          },
+          {
+            Conditions: {
+              Prefix: 'nft:drop:input',
+              Protocol: 'tcp',
+              DstIP: '',
+              DstPort: 0,
+              SrcIP: '',
+              SrcPort: 0
+            },
+            Notification: true
+          },
+          {
+            Conditions: {
+              Prefix: 'nft:drop:pfw',
+              Protocol: 'tcp',
+              DstIP: '',
+              DstPort: 0,
+              SrcIP: '',
+              SrcPort: 0
+            },
+            Notification: true
+          },
+          {
+            Conditions: {
+              Prefix: 'nft:drop:input',
+              Protocol: 'udp',
+              DstIP: '',
+              DstPort: 0,
+              SrcIP: '',
+              SrcPort: 0
+            },
+            Notification: true
+          },
+          {
+            Conditions: {
+              Prefix: 'nft:drop:forward',
+              Protocol: 'udp',
+              DstIP: '',
+              DstPort: 0,
+              SrcIP: '',
+              SrcPort: 0
+            },
+            Notification: true
+          }
+        ]
+      })
+
+      this.get('/hostapd/wlan1/config', (schema) => {
+        if (mockFeatureFlags.includes('rustap')) {
+          return mockRustapRadioConfig
+        }
+        return {
+          ap_isolate: 1,
+          auth_algs: 1,
+          channel: 36,
+          country_code: 'US',
+          ctrl_interface: '/state/wifi/control_wlan1',
+          ht_capab:
+            '[LDPC][HT40+][HT40-][GF][SHORT-GI-20][SHORT-GI-40][TX-STBC][RX-STBC1]',
+          hw_mode: 'a',
+          ieee80211ac: 1,
+          ieee80211d: 1,
+          ieee80211n: 1,
+          ieee80211w: 1,
+          interface: 'wlan1',
+          multicast_to_unicast: 1,
+          per_sta_vif: 1,
+          preamble: 1,
+          rsn_pairwise: 'CCMP',
+          sae_pwe: 2,
+          sae_psk_file: '/configs/wifi/sae_passwords',
+          ssid: 'TestLab',
+          vht_capab:
+            '[RXLDPC][SHORT-GI-80][TX-STBC-2BY1][RX-STBC-1][MAX-A-MPDU-LEN-EXP3][RX-ANTENNA-PATTERN][TX-ANTENNA-PATTERN]',
+          vht_oper_centr_freq_seg0_idx: 42,
+          vht_oper_chwidth: 1,
+          wmm_enabled: 1,
+          wpa: 2,
+          wpa_disable_eapol_key_retries: 1,
+          wpa_key_mgmt: 'WPA-PSK WPA-PSK-SHA256 SAE',
+          wpa_psk_file: '/configs/wifi/wpa2pskfile'
+        }
+      })
+
+      this.put('/hostapd/wlan1/config', (schema, request) => {
+        if (!mockFeatureFlags.includes('rustap')) {
+          return new Response(400, {}, { error: 'RustAP is not enabled' })
+        }
+        const patch = JSON.parse(request.requestBody)
+        mockRustapRadioConfig = { ...mockRustapRadioConfig, ...patch }
+        return mockRustapRadioConfig
+      })
+
+      this.get('/hostapd/wlan0/config', (schema) => {
+        //not defined so fail
+        return new Response(404, {}, { error: 'config not found' })
+      })
+
+      this.get('/hostapd/wlan2/config', (schema) => {
+        //not defined so fail
+        return new Response(404, {}, { error: 'config not found' })
+      })
+
+      this.get('/hostapd/wlan1/status', (schema) => {
+        return {
+          'ssid[0]': 'TestAP',
+          channel: 36,
+          freq: 5180
+        }
+      })
+
+      this.get('/hostapd/wlan1/all_stations', (schema) => {
+        return {
+          '11:11:11:11:11:11': {
+            AKMSuiteSelector: '00-0f-ac-2',
+            aid: '3',
+            capability: '0x11',
+            connected_time: '4946',
+            dot11RSNAStatsSTAAddress: '11:11:11:11:11:11',
+            dot11RSNAStatsSelectedPairwiseCipher: '00-0f-ac-4',
+            dot11RSNAStatsTKIPLocalMICFailures: '0',
+            dot11RSNAStatsTKIPRemoteMICFailures: '0',
+            dot11RSNAStatsVersion: '1',
+            flags: '[AUTH][ASSOC][AUTHORIZED][WMM][HT]',
+            hostapdWPAPTKGroupState: '0',
+            hostapdWPAPTKState: '11',
+            ht_caps_info: '0x016e',
+            ht_mcs_bitmask: 'ff000000000000000000',
+            inactive_msec: '1584',
+            listen_interval: '1',
+            rx_bytes: '126055',
+            rx_packets: '2394',
+            rx_rate_info: '60',
+            signal: '-85',
+            supported_rates: '8c 12 98 24 b0 48 60 6c',
+            timeout_next: 'NULLFUNC POLL',
+            tx_bytes: '485584',
+            tx_packets: '1957',
+            tx_rate_info: '1200 mcs 5 shortGI',
+            vlan_id: '4247',
+            wpa: '2'
+          },
+          '22:22:22:22:22:22': {
+            AKMSuiteSelector: '00-0f-ac-2',
+            aid: '3',
+            capability: '0x11',
+            connected_time: '4946',
+            dot11RSNAStatsSTAAddress: '22:22:22:22:22:22',
+            dot11RSNAStatsSelectedPairwiseCipher: '00-0f-ac-4',
+            dot11RSNAStatsTKIPLocalMICFailures: '0',
+            dot11RSNAStatsTKIPRemoteMICFailures: '0',
+            dot11RSNAStatsVersion: '1',
+            flags: '[AUTH][ASSOC][AUTHORIZED][WMM][HT]',
+            hostapdWPAPTKGroupState: '0',
+            hostapdWPAPTKState: '11',
+            ht_caps_info: '0x016e',
+            ht_mcs_bitmask: 'ff000000000000000000',
+            inactive_msec: '1584',
+            listen_interval: '1',
+            rx_bytes: '126055',
+            rx_packets: '2394',
+            rx_rate_info: '60',
+            signal: '-85',
+            supported_rates: '8c 12 98 24 b0 48 60 6c',
+            timeout_next: 'NULLFUNC POLL',
+            tx_bytes: '485584',
+            tx_packets: '1957',
+            tx_rate_info: '1200 mcs 5 shortGI',
+            vlan_id: '4247',
+            wpa: '2'
+          }
+        }
+      })
+
+      this.put('/ip/link/:name/up', (schema) => {
+        return true
+      })
+
+      this.put('/hostapd/:dev/setChannel', (schema) => {
+        return {
+          Vht_oper_centr_freq_seg0_idx: 42,
+          He_oper_centr_freq_seg0_idx: 42,
+          Vht_oper_chwidth: 1,
+          He_oper_chwidth: 1
+        }
+      })
+
+      this.get('/hostapd/:dev/failsafe', (schema, request) => {
+        let dev = request.params.dev
+        // Return 'ok' for most devices, but could return 'fail' for testing
+        // wlan0/phy0 returns 'ok' (no failsafe)
+        // wlan1/phy1 could return something else if we want to test failsafe mode
+        return '"ok"'
+      })
+
+      // plugins
+      this.get('/plugins_api/', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        return schema.plugins.all().models
+      })
+
+      this.put('/plugins_api/:name', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        let attrs = JSON.parse(request.requestBody)
+        let plugin = schema.plugins.findBy({ Name: attrs.Name })
+        if (plugin) {
+          plugin.update(attrs)
+        } else {
+          schema.plugins.create(attrs)
+        }
+
+        return schema.plugins.all().models
+      })
+
+      this.delete('/plugins_api/:name', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        let Name = request.params.name
+        schema.plugins.findBy({ Name }).destroy()
+        return schema.plugins.all().models
+      })
+
+      this.get('/plugins/lookup/classifications', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        let classifications = schema.devices
+          .all()
+          .models.filter((device) => device.MAC)
+          .map((device) => mockClassify({ MAC: device.MAC, Hostname: device.Name }))
+
+        // topology fixture devices win MAC collisions with the seeded devices
+        let topologyClassifications = [
+          { MAC: '11:11:11:11:11:11', Hostname: 'Laptop' },
+          { MAC: '22:22:22:22:22:22', Hostname: 'Printer' },
+          { MAC: '33:33:33:33:33:33', Hostname: 'Camera' },
+          { MAC: '44:44:44:44:44:44', Hostname: 'Tablet' },
+          { MAC: '55:55:55:55:55:55', Hostname: 'Phone' },
+          { MAC: '66:66:66:66:66:66', Hostname: 'game-desktop' },
+          { MAC: '77:77:77:77:77:77', Hostname: 'xbox' },
+          { MAC: '88:88:88:88:88:88', Hostname: 'playstation' }
+        ].map(mockClassify)
+
+        let seen = topologyClassifications.map((entry) => entry.MAC)
+        return [
+          ...topologyClassifications,
+          ...classifications.filter((entry) => !seen.includes(entry.MAC))
+        ]
+      })
+
+      this.get('/plugins/lookup/classification/:mac', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        let MAC = decodeURIComponent(request.params.mac)
+        let device = schema.devices.findBy({ MAC })
+        if (!device) {
+          return new Response(404, {}, { error: 'not found' })
+        }
+        return mockClassify({ MAC, Hostname: device.Name })
+      })
+
+      this.put('/plugins/lookup/classify', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        return mockClassify(JSON.parse(request.requestBody || '{}'))
+      })
+
+      this.put('/plugins/lookup/classification/:mac/correction', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        let attrs = JSON.parse(request.requestBody || '{}')
+        return {
+          ...mockClassify({ MAC: decodeURIComponent(request.params.mac), Hostname: attrs.Category }),
+          ...attrs,
+          MAC: decodeURIComponent(request.params.mac),
+          Confidence: 'High',
+          UserCorrection: true,
+          Pinned: true,
+          Evidence: attrs.Evidence || ['user correction']
+        }
+      })
+
+      this.delete('/plugins/lookup/classification/:mac/correction', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        let MAC = decodeURIComponent(request.params.mac)
+        let device = schema.devices.findBy({ MAC })
+        return mockClassify({ MAC, Hostname: device?.Name })
+      })
+
+      this.get('/plugins/lookup/classification/:mac/signals', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        let MAC = decodeURIComponent(request.params.mac)
+        let device = schema.devices.findBy({ MAC })
+        if (!device) {
+          return new Response(404, {}, { error: 'not found' })
+        }
+        let name = device.Name || ''
+        let extras = {}
+        if (name.match(/tv|roku/i)) {
+          extras = {
+            Domains: ['scribe.logs.roku.com'],
+            Services: ['_googlecast._tcp.']
+          }
+        } else if (name.match(/iphone|android|phone/i)) {
+          extras = {
+            VendorClass: name.match(/iphone/i) ? '' : 'android-dhcp-14',
+            ParamReqList: name.match(/iphone/i)
+              ? '1,121,3,6,15,119,252'
+              : '1,3,6,15,26,28,51,58,59,43'
+          }
+        } else if (name.match(/rpi/i)) {
+          extras = { Domains: ['api.balena-cloud.com'], VendorClass: 'udhcp 1.36' }
+        }
+
+        return {
+          Hostname: name,
+          OUIVendor: '',
+          Services: [],
+          TXT: {},
+          SSDPHeaders: {},
+          Domains: [],
+          VendorClass: '',
+          ParamReqList: '',
+          ...extras
+        }
+      })
+
+      this.get('/plugins/lookup/fingerprints/custom', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+        return mockCustomFingerprints
+      })
+
+      this.put('/plugins/lookup/fingerprints/custom', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+        mockCustomFingerprints = JSON.parse(request.requestBody || '[]')
+        return mockCustomFingerprints
+      })
+
+      this.get('/plugins/lookup/fingerprints/builtin', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+        return mockBuiltinFingerprints
+      })
+
+      this.put('/plugins/lookup/fingerprints/builtin', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+        mockBuiltinFingerprints = {
+          Overridden: true,
+          Rules: JSON.parse(request.requestBody || '[]')
+        }
+        return mockBuiltinFingerprints
+      })
+
+      this.delete('/plugins/lookup/fingerprints/builtin', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+        mockBuiltinFingerprints = {
+          Overridden: false,
+          Rules: mockDefaultFingerprints
+        }
+        return mockBuiltinFingerprints
+      })
+
+      this.get('/plusToken', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+        return JSON.stringify(mockPlusToken)
+      })
+
+      this.put('/plusToken', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+        mockPlusToken = JSON.parse(request.requestBody)
+        return JSON.stringify(mockPlusToken)
+      })
+
+      this.get('/plusTokenValid', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+        if (mockPlusToken == '') {
+          return new Response(400, {}, 'Empty plus token')
+        }
+        return new Response(200)
+      })
+
+      this.put('/startPlusExtension', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+        let name = JSON.parse(request.requestBody)
+        let plugin = schema.plugins.findBy({ Name: name, Plus: true })
+        if (!plugin) {
+          return new Response(404, {}, 'Plus extension not found: ' + name)
+        }
+        return new Response(200)
+      })
+
+      this.put('/stopPlusExtension', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+        let name = JSON.parse(request.requestBody)
+        let plugin = schema.plugins.findBy({ Name: name, Plus: true })
+        if (!plugin) {
+          return new Response(404, {}, 'Plus extension not found: ' + name)
+        }
+        return new Response(200)
+      })
+
+      //DNS plugin
+      this.get('/plugins/dns/block/config', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        return {
+          BlockLists: schema.dnsblocklists.all().models,
+          BlockDomains: schema.dnsoverrides.where({ Type: 'block' }).models,
+          PermitDomains: schema.dnsoverrides.where({ Type: 'permit' }).models,
+          ClientIPExclusions: null
+        }
+      })
+
+      this.get('/plugins/dns/block/metrics', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        return {
+          TotalQueries: 65534,
+          BlockedQueries: 4096,
+          BlockedDomains: 1024
+        }
+      })
+
+      this.put('/plugins/dns/block/setRefresh', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        return new Response(200, {})
+      })
+
+      this.get('/plugins/dns/block/blocklists', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        return schema.dnsblocklists.all().models
+      })
+
+      this.put('/plugins/dns/block/blocklists', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        let attrs = JSON.parse(request.requestBody)
+        return schema.dnsblocklists.create(attrs)
+      })
+
+      this.delete('/plugins/dns/block/blocklists', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        let attrs = JSON.parse(request.requestBody)
+        let URI = attrs.URI
+        return schema.dnsblocklists.findBy({ URI }).destroy()
+      })
+
+      this.put('/plugins/dns/block/override', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        let attrs = JSON.parse(request.requestBody)
+        return schema.dnsoverrides.create(attrs)
+      })
+
+      this.delete('/plugins/dns/block/override', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        let attrs = JSON.parse(request.requestBody)
+        let Domain = attrs.Domain
+        return schema.dnsoverrides.findBy({ Domain }).destroy()
+      })
+
+      this.get('/plugins/dns/block/dump_domains', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        return [
+          '_thums.ero-advertising.com.',
+          '0.fls.doubleclick.net.',
+          '0.r.msn.com.',
+          '0.start.bz.',
+          '0.up.qingdaonews.com.'
+        ]
+      })
+
+      this.get('/plugins/dns/log/config', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        return {
+          HostPrivacyIPList: schema.dnslogprivacylists.all().models,
+          DomainIgnoreList: schema.dnslogdomainignorelists.all().models
+        }
+      })
+
+      this.get('/plugins/dns/log/host_privacy_list', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        return schema.dnslogprivacylists.all().models.map((d) => d.ip)
+      })
+
+      this.get('/plugins/dns/log/domain_ignores', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        return schema.dnslogdomainignorelists.all().models.map((d) => d.domain)
+      })
+
+      this.get('/plugins/dns/log/history/:ip', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        let types = ['NOERROR', 'NODATA', 'OTHERERROR', 'BLOCKED']
+        let ip = request.params.ip //192.168.2.101
+        let revip = ip.split('').reverse().join('')
+        let day = 1 + parseInt(Math.random() * 28)
+        day = day.toString().padStart(2, '0')
+        return [
+          {
+            Q: [
+              {
+                Name: `${revip}.in-addr.arpa.`,
+                Qtype: 12,
+                Qclass: 1
+              }
+            ],
+            A: [
+              {
+                Hdr: {
+                  Name: `${revip}.in-addr.arpa.`,
+                  Rrtype: 12,
+                  Class: 1,
+                  Ttl: 30,
+                  Rdlength: 0
+                },
+                Ptr: 'rpi4.lan.'
+              }
+            ],
+            Type: 'NOERROR',
+            FirstName: `${revip}.in-addr.arpa.`,
+            FirstAnswer: 'rpi4.lan.',
+            Local: '[::]:53',
+            Remote: `${ip}:50862`,
+            Timestamp: `2022-03-${day}T08:05:34.983138386Z`
+          },
+          {
+            Q: [
+              {
+                Name: 'caldav.fe.apple-dns.net.',
+                Qtype: 65,
+                Qclass: 1
+              }
+            ],
+            A: [],
+            Type: 'NODATA',
+            FirstName: 'caldav.fe.apple-dns.net.',
+            FirstAnswer: '',
+            Local: '[::]:53',
+            Remote: `${ip}:50216`,
+            Timestamp: `2022-03-${day}T08:05:34.01579228Z`
+          },
+          {
+            Q: [
+              {
+                Name: `lb._dns-sd._udp.${revip}.in-addr.arpa.`,
+                Qtype: 12,
+                Qclass: 1
+              }
+            ],
+            A: [],
+            Type: 'OTHERERROR',
+            FirstName: `lb._dns-sd._udp.${revip}.in-addr.arpa.`,
+            FirstAnswer: '',
+            Local: '[::]:53',
+            Remote: `${ip}:64151`,
+            Timestamp: `2022-03-${day}T08:05:29.976935196Z`
+          }
+        ]
+      })
+
+      this.get('/plugins/wireguard/peers', (schema, request) => {
+        return schema.wireguardpeers.all().models
+      })
+
+      this.put('/plugins/wireguard/peer', (schema, request) => {
+        // note prefer if the user generate the privkey & supply pubkey
+        let attrs = JSON.parse(request.requestBody)
+
+        const rKey = () => {
+          let key = ''
+          for (let i = 0; i < 32; i++) {
+            key += String.fromCharCode(r(255))
+          }
+
+          return Base64.btoa(key)
+        }
+
+        let PublicKey = attrs.PublicKey || rKey()
+        let PrivateKey = attrs.PublicKey ? '<PRIVATE KEY>' : rKey()
+
+        let AllowedIPs = '192.168.3.4/32'
+        if (attrs.AllowedIPs) {
+          AllowedIPs = attrs.AllowedIPs
+        } else {
+          // get next free ip
+          let ips = schema.wireguardpeers
+            .all()
+            .models.map((p) => p.AllowedIPs.replace(/\/.*/, ''))
+
+          for (let i = 4; i < 100; i++) {
+            let ip = `192.168.3.${i}`
+            if (!ips.includes(ip)) {
+              AllowedIPs = `${ip}/32`
+              break
+            }
+          }
+        }
+
+        let Address = AllowedIPs.replace(/\/32$/, '/24')
+
+        let peer = {
+          PublicKey,
+          AllowedIPs,
+          Endpoint: '192.168.2.1:51280',
+          PersistentKeepalive: 25
+        }
+
+        schema.wireguardpeers.create(peer)
+
+        //output
+
+        return {
+          Interface: {
+            PrivateKey,
+            Address,
+            DNS: '1.1.1.1, 1.0.0.1'
+          },
+          Peer: {
+            PublicKey: '5vazmq54exf62jfXWE9YQ/m8kjcCZPtQBpLib2W+1H4=',
+            AllowedIPs: '0.0.0.0/0',
+            Endpoint: '192.168.2.1:51280',
+            PersistentKeepalive: 25
+          }
+        }
+      })
+
+      this.delete('/plugins/wireguard/peer', (schema, request) => {
+        //let id = request.params.id
+        let attrs = JSON.parse(request.requestBody)
+        let PublicKey = attrs.PublicKey
+
+        return schema.wireguardpeers.findBy({ PublicKey }).destroy()
+      })
+
+      this.get('/plugins/wireguard/status', (schema, request) => {
+        let status = {
+          wg0: {
+            publicKey: '5vazmq54exf62jfXWE9YQ/m8kjcCZPtQBpLib2W+1H4=',
+            listenPort: 51280,
+            peers: {}
+          }
+        }
+
+        for (let p of schema.wireguardpeers.all().models) {
+          status.wg0.peers[p.PublicKey] = {
+            presharedKey: p.PresharedKey,
+            allowedIps: [p.AllowedIPs]
+          }
+        }
+
+        return status
+      })
+
+      this.get('/plugins/wireguard/genkey', (schema, request) => {
+        const rKey = () => {
+          let key = ''
+          for (let i = 0; i < 32; i++) {
+            key += String.fromCharCode(r(255))
+          }
+
+          return Base64.btoa(key)
+        }
+
+        return {
+          PrivateKey: rKey(),
+          PublicKey: rKey()
+        }
+      })
+
+      this.put('/plugins/wireguard/up', (schema, request) => {
+        return true
+      })
+
+      this.put('/plugins/wireguard/down', (schema, request) => {
+        return true
+      })
+
+      this.get('/plugins/wireguard/endpoints', (schema, request) => {
+        return []
+      })
+
+      // nftables
+      this.get('/nftables', (schema, request) => {
+        return {
+          nftables: [
+            {
+              metainfo: {
+                version: '0.9.8',
+                release_name: 'E.D.S.',
+                json_schema_version: 1
+              }
+            },
+            { table: { family: 'inet', name: 'filter', handle: 18 } },
+            { table: { family: 'inet', name: 'nat', handle: 19 } },
+            { table: { family: 'inet', name: 'mangle', handle: 20 } },
+            { table: { family: 'ip', name: 'accounting', handle: 22 } }
+          ]
+        }
+      })
+
+      // firewall
+      this.get('/firewall/config', (schema, request) => {
+        return {
+          ForwardingRules: schema.forwardrules.all().models,
+          BlockRules: schema.blockrules.all().models,
+          ForwardingBlockRules: schema.forwardblockrules.all().models,
+          ServicePorts: schema.serviceports.all().models,
+          CustomInterfaceRules: schema.custominterfacerules.all().models
+        }
+      })
+
+      this.put('/firewall/custom_interface', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        let attrs = JSON.parse(request.requestBody)
+        return schema.custominterfacerules.create(attrs)
+      })
+
+      this.delete('/firewall/custom_interface', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        let attrs = JSON.parse(request.requestBody)
+        return schema.custominterfacerules.where(attrs).destroy()
+      })
+
+      this.put('/firewall/forward', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        let attrs = JSON.parse(request.requestBody)
+        return schema.forwardrules.create(attrs)
+      })
+
+      this.delete('/firewall/forward', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        let attrs = JSON.parse(request.requestBody)
+        return schema.forwardrules.where(attrs).destroy()
+      })
+
+      this.put('/firewall/block', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        let attrs = JSON.parse(request.requestBody)
+        return schema.blockrules.create(attrs)
+      })
+
+      this.delete('/firewall/block', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        let attrs = JSON.parse(request.requestBody)
+        return schema.blockrules.where(attrs).destroy()
+      })
+
+      this.put('/firewall/block_forward', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        let attrs = JSON.parse(request.requestBody)
+        return schema.forwardblockrules.create(attrs)
+      })
+
+      this.delete('/firewall/block_forward', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        let attrs = JSON.parse(request.requestBody)
+        return schema.forwardblockrules.where(attrs).destroy()
+      })
+
+      this.put('/firewall/service_port', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        let attrs = JSON.parse(request.requestBody)
+        return schema.serviceports.create(attrs)
+      })
+
+      this.delete('/firewall/service_port', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        let attrs = JSON.parse(request.requestBody)
+        return schema.serviceports.where(attrs).destroy()
+      })
+
+      // tokens
+      this.get('/tokens', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        return schema.tokens.all().models
+      })
+
+      this.put('/tokens', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        let attrs = JSON.parse(request.requestBody)
+        attrs.Token = 'TOKEN' + parseInt(Math.random() * 4096)
+        schema.tokens.create(attrs)
+        return attrs
+      })
+
+      this.delete('/tokens', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        let attrs = JSON.parse(request.requestBody)
+        return schema.tokens.where(attrs).destroy()
+      })
+
+      //Dyndns plugin
+      this.get('/plugins/dyndns/config', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        return {
+          provider: 'Cloudflare',
+          email: '',
+          password: '',
+          login_token: 'Tokenish',
+          domains: [
+            {
+              domain_name: 'supernetworks.org',
+              sub_domains: ['dyndns']
+            }
+          ],
+          ip_url: 'https://ip4.seeip.org',
+          ipv6_url: '',
+          ip_type: 'IPv4',
+          interval: 300,
+          socks5: '',
+          resolver: '8.8.8.8',
+          run_once: true
+        }
+      })
+
+      //pfw
+      this.get('/plugins/pfw/config', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        let BlockRules = schema.pfwBlockRules.all().models
+        let TagRules = schema.pfwTagRules.all().models
+        let ForwardingRules = schema.pfwForwardRules.all().models
+        let SiteVPNs = schema.vpnSites.all().models
+
+        return {
+          ForwardingRules,
+          BlockRules,
+          TagRules,
+          GroupRules: [],
+          Variables: {},
+          SiteVPNs,
+          APIToken: '*masked*'
+        }
+      })
+
+      this.put('/plugins/pfw/sitevpns', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        let attrs = JSON.parse(request.requestBody)
+        schema.vpnSites.create(attrs)
+
+        return attrs
+      })
+
+      this.put('/plugins/pfw/block', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        let attrs = JSON.parse(request.requestBody)
+        schema.pfwBlockRules.create(attrs)
+
+        return attrs
+      })
+
+      this.put('/plugins/pfw/forward', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        let attrs = JSON.parse(request.requestBody)
+        schema.pfwForwardRules.create(attrs)
+
+        return attrs
+      })
+
+      //update pfw rules
+      this.put('/plugins/pfw/:type/:index', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        let type = request.params.type
+        let index = parseInt(request.params.index) + 1
+        let attrs = JSON.parse(request.requestBody)
+        if (type == 'block') {
+          schema.pfwBlockRules.find(index).update(attrs)
+        } else if (type == 'forward') {
+          schema.pfwForwardRules.find(index).update(attrs)
+        } else if (type == 'tag') {
+          schema.pfwTagRules.find(index).update(attrs)
+        }
+
+        return attrs
+      })
+
+      this.delete('/plugins/pfw/:type/:index', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        let type = request.params.type
+        let index = parseInt(request.params.index) + 1
+        if (type == 'block') {
+          return schema.pfwBlockRules.find(index).destroy()
+        } else if (type == 'forward') {
+          return schema.pfwForwardRules.find(index).destroy()
+        } else if (type == 'tag') {
+          return schema.pfwTagRules.find(index).destroy()
+        } else if (type == 'sitevpns') {
+          return schema.vpnSites.find(index).destroy()
+        }
+      })
+
+      this.get('/plugins/mesh/config', (schema, request) => {
+        return {
+          ParentIP: '',
+          ParentAPIToken: '',
+          LeafRouters: []
+        }
+      })
+
+      this.get('/plugins/mesh/leafMode', (schema, request) => {
+        return false
+      })
+
+      this.get('/plugins/mesh/leafRouters', (schema, request) => {
+        return []
+        /*
+        let token = schema.tokens.findBy({Name: 'PLUS-MESH-API-DOWNHAUL-TOKEN'})
+        let dev = schema.devices.findBy({Name: 'device-3'})
+
+        return [
+          {APIToken: token.Token, IP: dev.RecentIP},
+        ]
+        */
+      })
+
+      this.put('/plugins/mesh/setSSID', (schema, request) => {
+        return true
+      })
+
+      this.get('/release', (schema, request) => {
+        return {
+          CustomChannel: '-dev',
+          CustomVersion: '0.1.29',
+          Current: 'latest-dev'
+        }
+      })
+
+      this.get('/releaseChannels', (schema, request) => {
+        return ['', '-dev']
+      })
+
+      this.get(
+        '/releasesAvailable?container=super_superd',
+        (schema, request) => {
+          return [
+            'latest',
+            '0.1.7',
+            '0.1.25dev',
+            '0.1.25',
+            'latest-dev',
+            '0.1.25-dev',
+            '0.1.26',
+            '0.1.26-dev',
+            '0.1.27',
+            '0.1.27-dev',
+            '0.1.28',
+            '0.1.28-dev',
+            '0.1.29',
+            '0.1.29-dev',
+            '0.1.30',
+            '0.1.31',
+            '0.1.32',
+            '0.1.32-dev'
+          ]
+        }
+      )
+
+      this.get('/plugins/db/config', (schema, request) => {
+        return {
+          SaveEvents: [
+            'www:auth:user:success',
+            'log:www:access',
+            'dns:serve:event',
+            'log:api'
+          ],
+          MaxSize: 10485760
+        }
+      })
+
+      this.get('/plugins/db/buckets', (schema, request) => {
+        return [
+          'dns:block:event',
+          'dns:serve:192.168.2.101',
+          'dns:serve:event',
+          'log:api',
+          'log:test',
+          'log:www:access',
+          'nft:lan:in',
+          'nft:wan:in',
+          'www:auth:user:success',
+          'alert:auth:failure:',
+          'alert:nft:drop:mac:',
+          'alert:nft:drop:private:',
+          'alert:nft:drop:input:',
+          'alert:wifi:auth:fail:',
+          'nft:drop:input',
+          'wifi:auth:fail',
+          'wifi:auth:success'
+        ]
+      })
+
+      this.get('/plugins/db/stats', (schema, request) => {
+        return {
+          Size: 13344768,
+          Topics: [
+            'nft:wan:in',
+            'dns:serve:192.168.2.102',
+            'nft:wan:out',
+            'log:www:access',
+            'www:auth:token:success',
+            'nft:lan:in'
+          ]
+        }
+      })
+
+      this.get('/plugins/db/stats/:bucket', (schema, request) => {
+        return {
+          BranchPageN: 1,
+          BranchOverflowN: 0,
+          LeafPageN: 55,
+          LeafOverflowN: 0,
+          KeyN: 383,
+          Depth: 2,
+          BranchAlloc: 4096,
+          BranchInuse: 1336,
+          LeafAlloc: 225280,
+          LeafInuse: 205673,
+          BucketN: 1,
+          InlineBucketN: 0,
+          InlineBucketInuse: 0
+        }
+      })
+
+      this.get('/plugins/db/bucket/:bucket/:key', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+        let value = mockDbBuckets[`${request.params.bucket}/${request.params.key}`]
+        if (value === undefined) {
+          return new Response(404, {}, { error: 'not found' })
+        }
+        return value
+      })
+
+      this.put('/plugins/db/bucket/:bucket/:key', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+        let value = JSON.parse(request.requestBody || 'null')
+        mockDbBuckets[`${request.params.bucket}/${request.params.key}`] = value
+        return value
+      })
+
+      this.get('/plugins/db/items/:bucket', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        let bucket = request.params.bucket
+        let filter = request.queryParams.filter
+
+        // Decode the URL-encoded filter parameter
+        if (filter) {
+          filter = decodeURIComponent(filter)
+        }
+
+        if (bucket.startsWith('dns:serve:')) {
+          let types = ['NOERROR', 'NODATA', 'OTHERERROR', 'BLOCKED']
+          let ip = bucket.replace(/^dns:serve:/, '')
+          let revip = ip.split('').reverse().join('')
+          let day = 1 + parseInt(Math.random() * 28)
+          day = day.toString().padStart(2, '0')
+
+          return [
+            {
+              Q: [
+                {
+                  Name: `${revip}.in-addr.arpa.`,
+                  Qtype: 12,
+                  Qclass: 1
+                }
+              ],
+              A: [
+                {
+                  Hdr: {
+                    Name: `${revip}.in-addr.arpa.`,
+                    Rrtype: 12,
+                    Class: 1,
+                    Ttl: 30,
+                    Rdlength: 0
+                  },
+                  Ptr: 'rpi4.lan.'
+                }
+              ],
+              Type: 'NOERROR',
+              FirstName: `${revip}.in-addr.arpa.`,
+              FirstAnswer: 'rpi4.lan.',
+              Local: '[::]:53',
+              Remote: `${ip}:50862`,
+              Timestamp: `2022-03-${day}T08:05:34.983138386Z`
+            },
+            {
+              Q: [
+                {
+                  Name: 'caldav.fe.apple-dns.net.',
+                  Qtype: 65,
+                  Qclass: 1
+                }
+              ],
+              A: [],
+              Type: 'NODATA',
+              FirstName: 'caldav.fe.apple-dns.net.',
+              FirstAnswer: '',
+              Local: '[::]:53',
+              Remote: `${ip}:50216`,
+              Timestamp: `2022-03-${day}T08:05:34.01579228Z`
+            },
+            {
+              Q: [
+                {
+                  Name: `lb._dns-sd._udp.${revip}.in-addr.arpa.`,
+                  Qtype: 12,
+                  Qclass: 1
+                }
+              ],
+              A: [],
+              Type: 'OTHERERROR',
+              FirstName: `lb._dns-sd._udp.${revip}.in-addr.arpa.`,
+              FirstAnswer: '',
+              Local: '[::]:53',
+              Remote: `${ip}:64151`,
+              Timestamp: `2022-03-${day}T08:05:29.976935196Z`
+            }
+          ]
+        } else if (bucket.startsWith('alert:auth:failure:')) {
+          try {
+            return mockAlertItems(bucket, authFail, filter)
+          } catch (e) {
+            alert(e)
+          }
+        } else if (bucket.startsWith('alert:nft:drop:mac')) {
+          try {
+            return mockAlertItems(bucket, macViolation, filter)
+          } catch (e) {
+            alert(e)
+          }
+        } else if (bucket.startsWith('alert:nft:drop:private')) {
+          try {
+            return mockAlertItems(bucket, dropPrivate, filter)
+          } catch (e) {
+            alert(e)
+          }
+        } else if (bucket.startsWith('alert:nft:drop:input')) {
+          try {
+            return mockAlertItems(bucket, nftDrop, filter)
+          } catch (e) {
+            alert(e)
+          }
+        } else if (bucket.startsWith('alert:wifi:auth:fail')) {
+          try {
+            return mockAlertItems(bucket, wifiAuthFail, filter)
+          } catch (e) {
+            alert(e)
+          }
+        }
+
+        //log:api
+        let res = []
+        for (let i = 0; i < 10; i++) {
+          let day = `${i + 1}`.padStart(2, '0')
+          let log = {
+            file: '/code/firewall.go:1264',
+            func: 'main.establishDevice',
+            level: 'info',
+            msg: 'Populating route and vmaps aa:c0:6c:34:aa:20 192.168.2.10 ` eth0 ` wlan1.4303',
+            Timestamp: `2022-03-${day}T08:05:29.976935196Z`
+          }
+
+          res.push(log)
+        }
+
+        return res
+      })
+
+      this.get('/uplink/wifi', (schema, request) => {
+        return {
+          WPAs: [
+            {
+              Disabled: true,
+              Password: 'password',
+              SSID: 'SPRLabs',
+              KeyMgmt: 'WPA-PSK WPA-PSK-SHA256',
+              Priority: '1',
+              BSSID: '00:11:22:33:44:55:66'
+            }
+          ]
+        }
+      })
+
+      this.put('/uplink/wifi', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        let attrs = JSON.parse(request.requestBody)
+        schema.uplinks.create(attrs)
+
+        return attrs
+      })
+
+      this.get('/subnetConfig', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        let TinyNets = schema.tinynets.all().models.map((s) => s.Subnet)
+
+        return { TinyNets, LeaseTime: '24h0m0s' }
+      })
+
+      this.put('/subnetConfig', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+
+        // array of strings subnets
+        let attrs = JSON.parse(request.requestBody)
+        schema.tinynets.all().destroy()
+        attrs.TinyNets.map((Subnet) => {
+          schema.tinynets.create({ Subnet })
+        })
+      })
+
+      this.get('/multicastSettings', (schema, request) => {
+        return {
+          Disabled: false,
+          Addresses: [
+            {
+              Address: '239.255.255.250:1900',
+              Disabled: false,
+              Tags: []
+            },
+            {
+              Address: '224.0.0.251:5353',
+              Disabled: false,
+              Tags: null
+            }
+          ],
+          DisableMDNSAdvertise: false,
+          MDNSName: ''
+        }
+      })
+
+      this.get('/dnsSettings', (schema, request) => {
+        return { UpstreamTLSHost: '', UpstreamIPAddress: '', TlsDisable: false }
+      })
+
+      this.get('/logs', (schema, request) => {
+        let logs = []
+        let log = {
+          _HOSTNAME: 'spr',
+          CONTAINER_NAME: 'superwireguard',
+          PRIORITY: '6',
+          CONTAINER_ID_FULL:
+            'f2a279845383b08b22aaea297d4e027971f6ab76d1c9c192eb1020b20dfa3cf3',
+          CONTAINER_ID: 'f2a279845383',
+          _EXE: '/usr/bin/dockerd',
+          SYSLOG_IDENTIFIER: 'f2a279845383',
+          _MACHINE_ID: 'c2726e42e7de4a85bc9d837c034242a4',
+          IMAGE_NAME: 'ghcr.io/spr-networks/super_wireguard:latest-dev',
+          CONTAINER_TAG: 'f2a279845383',
+          __REALTIME_TIMESTAMP: '1698316313985702',
+          MESSAGE: '@ GET /status'
+        }
+
+        for (let i = 0; i < 10; i++) {
+          let __REALTIME_TIMESTAMP =
+            parseInt(log.__REALTIME_TIMESTAMP) + i * 1e6
+          let CONTAINER_NAME = rpick([
+            'superapi',
+            'superwifid',
+            'superwireguard'
+          ])
+          logs.push({ ...log, CONTAINER_NAME, __REALTIME_TIMESTAMP })
+        }
+        return logs
+      })
+
+      this.get('/alerts', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+        let alerts = [
+          {
+            TopicPrefix: 'nft:drop:mac',
+            MatchAnyOne: false,
+            InvertRule: false,
+            Conditions: [],
+            Actions: [
+              {
+                SendNotification: false,
+                StoreAlert: true,
+                MessageTitle: 'MAC Filter Violation',
+                MessageBody:
+                  'MAC IP Violation {{IP.SrcIP#Device}} {{IP.SrcIP}} {{Ethernet.SrcMAC}} to {{IP.DstIP}} {{Ethernet.DstMAC}}',
+                NotificationType: 'warning',
+                GrabEvent: true,
+                GrabValues: false
+              }
+            ],
+            Name: 'MAC Filter Violation',
+            Disabled: true,
+            RuleId: '7f3266dd-7697-44ce-8ddd-36a006043509'
+          },
+          {
+            TopicPrefix: 'auth:failure',
+            MatchAnyOne: false,
+            InvertRule: false,
+            Conditions: [
+              {
+                JPath: '$[?(@.type=="user")]'
+              }
+            ],
+            Actions: [
+              {
+                SendNotification: false,
+                StoreAlert: true,
+                MessageTitle: 'Login Failure',
+                MessageBody: '{{name}} failed to login with {{reason}}',
+                NotificationType: 'error',
+                GrabEvent: true,
+                GrabValues: false
+              }
+            ],
+            Name: 'User Login Failure',
+            Disabled: true,
+            RuleId: 'ea676ee7-ec68-4a23-aba4-ba69feee4d8c'
+          },
+          {
+            TopicPrefix: 'nft:drop:private',
+            MatchAnyOne: false,
+            InvertRule: false,
+            Conditions: [],
+            Actions: [
+              {
+                SendNotification: false,
+                StoreAlert: true,
+                MessageTitle: 'Drop Private Network Request',
+                MessageBody:
+                  'Dropped Traffic from {{IP.SrcIP#Device}} {{IP.SrcIP}} {{InDev#Interface}} to {{IP.DstIP}} {{OutDev#Interface}}',
+                NotificationType: 'warning',
+                GrabEvent: true,
+                GrabValues: false
+              }
+            ],
+            Name: 'Drop Private Request',
+            Disabled: true,
+            RuleId: '2adbec19-6b47-4a99-a499-ab0b8da652a8'
+          },
+          {
+            TopicPrefix: 'wifi:auth:fail',
+            MatchAnyOne: false,
+            InvertRule: false,
+            Conditions: [],
+            Actions: [
+              {
+                SendNotification: true,
+                StoreAlert: true,
+                MessageTitle: 'WiFi Auth Failure',
+                MessageBody:
+                  '{{MAC#Device}} {{MAC}} failed wifi authentication {{Reason}} with type {{Type}}',
+                NotificationType: 'warning',
+                GrabEvent: true,
+                GrabValues: false
+              }
+            ],
+            Name: 'Wifi Auth Failure',
+            Disabled: false,
+            RuleId: 'f16e9a58-9f80-455c-a280-211bd8b1fd05'
+          },
+          {
+            TopicPrefix: 'wifi:auth:success',
+            MatchAnyOne: false,
+            InvertRule: false,
+            Conditions: [],
+            Actions: [
+              {
+                SendNotification: true,
+                StoreAlert: false,
+                MessageTitle: 'Device Connected',
+                MessageBody: 'Authentication success for {{MAC#Device}}',
+                NotificationType: 'success',
+                GrabEvent: true,
+                GrabValues: false,
+                GrabFields: ['MAC']
+              }
+            ],
+            Name: 'Device Connected',
+            Disabled: false,
+            RuleId: '387c3a9d-b072-4ba7-b6ff-895f484db4ec'
+          },
+          {
+            TopicPrefix: 'nft:drop:input',
+            MatchAnyOne: false,
+            InvertRule: false,
+            Conditions: [],
+            Actions: [
+              {
+                SendNotification: false,
+                StoreAlert: true,
+                MessageTitle: 'Dropped Input',
+                MessageBody:
+                  'Drop Incoming Traffic to Router from {{IP.SrcIP}} to port {{TCP.DstPort}} {{UDP.DstPort}}',
+                NotificationType: 'warning',
+                GrabEvent: true,
+                GrabValues: false
+              }
+            ],
+            Name: 'Dropped Input',
+            Disabled: true,
+            RuleId: '481822f4-a20c-4cec-92d9-dad032d2c450'
+          },
+          {
+            TopicPrefix: 'dns:serve:',
+            MatchAnyOne: false,
+            InvertRule: false,
+            Conditions: [
+              {
+                JPath: '$[?(@.FirstName=="c2h.se.")]'
+              }
+            ],
+            Actions: [
+              {
+                SendNotification: false,
+                StoreAlert: false,
+                MessageTitle: 'Domain resolve',
+                MessageBody: '{{Remote#Device}} domain lookup: {{FirstName}}',
+                NotificationType: 'info',
+                GrabEvent: true,
+                GrabValues: false,
+                GrabFields: ['FirstName', 'Remote']
+              }
+            ],
+            Name: 'dns resolve',
+            Disabled: true,
+            RuleId: 'f6bdb6ee-ffcb-41af-b3c7-6270cba936fb'
+          },
+          {
+            TopicPrefix: 'device:vpn:online',
+            MatchAnyOne: false,
+            InvertRule: false,
+            Conditions: [],
+            Actions: [
+              {
+                SendNotification: true,
+                StoreAlert: false,
+                MessageTitle:
+                  '{{DeviceIP#Device}} connected via {{VPNType}} from {{RemoteEndpoint}}',
+                MessageBody:
+                  '{{DeviceIP#Device}} connected via {{VPNType}} from {{RemoteEndpoint}}',
+                NotificationType: 'info',
+                GrabEvent: true,
+                GrabValues: false
+              }
+            ],
+            Name: 'VPN Connection',
+            Disabled: false,
+            RuleId: '5e87c42b-d3da-45fa-a58f-ae689134c2a7'
+          },
+          {
+            TopicPrefix: 'device:vpn:offline',
+            MatchAnyOne: false,
+            InvertRule: false,
+            Conditions: [],
+            Actions: [
+              {
+                SendNotification: true,
+                StoreAlert: false,
+                MessageTitle:
+                  '{{DeviceIP#Device}} disconnected from {{VPNType}} by {{RemoteEndpoint}}',
+                MessageBody:
+                  '{{DeviceIP#Device}} disconnected from {{VPNType}} by {{RemoteEndpoint}}',
+                NotificationType: 'info',
+                GrabEvent: true,
+                GrabValues: false
+              }
+            ],
+            Name: 'VPN Connection',
+            Disabled: false,
+            RuleId: '95b8992a-53ff-46ad-a6d8-9882fc13241f'
+          }
+        ]
+        if (!mockAlertRules) mockAlertRules = alerts
+        return mockAlertRules
+      })
+
+      this.put('/alerts/:index', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+        const index = Number(request.params.index)
+        if (!mockAlertRules || !mockAlertRules[index]) {
+          return new Response(400, {}, { error: 'invalid index' })
+        }
+        const updated = JSON.parse(request.requestBody || '{}')
+        updated.RuleId = mockAlertRules[index].RuleId
+        mockAlertRules[index] = updated
+        return mockAlertRules
+      })
+
+      this.put('/alerts', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+        const added = JSON.parse(request.requestBody || '{}')
+        added.RuleId = added.RuleId || `mock-alert-${Date.now()}`
+        mockAlertRules = [...(mockAlertRules || []), added]
+        return mockAlertRules
+      })
+
+      this.get('/otp_status', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+        return []
+      })
+
+      this.get('/parentalControls/personas', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+        return mockPersonas
+      })
+
+      this.put('/parentalControls/personas', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+        let persona = JSON.parse(request.requestBody)
+        if (!persona.Tag) {
+          persona.Tag = `persona:${persona.Name}`
+        }
+        let idx = mockPersonas.findIndex((p) => p.Name == persona.Name)
+        if (idx >= 0) {
+          mockPersonas[idx] = persona
+        } else {
+          mockPersonas.push(persona)
+        }
+        return mockPersonas
+      })
+
+      this.del('/parentalControls/personas', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+        let persona = JSON.parse(request.requestBody)
+        mockPersonas = mockPersonas.filter((p) => p.Name != persona.Name)
+        return mockPersonas
+      })
+
+      this.get('/parentalControls/usage', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+        let now = parseInt(Date.now() / 1000)
+        let out = {}
+        for (let p of mockPersonas) {
+          let used = mockPersonasState.UsedMinutes[p.Tag] || 0
+          let pause = mockPersonasState.PauseUntil[p.Tag] || 0
+          let grant = mockPersonasState.GrantUntil[p.Tag] || 0
+          let blocked = false
+          if (!p.Disabled && grant <= now) {
+            blocked =
+              pause > now ||
+              (p.DailyLimitMinutes > 0 && used >= p.DailyLimitMinutes)
+          }
+          out[p.Tag] = {
+            Used: used,
+            Limit: p.DailyLimitMinutes,
+            Blocked: blocked,
+            PauseUntil: pause,
+            GrantUntil: grant
+          }
+        }
+        return out
+      })
+
+      this.put('/parentalControls/pause', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+        let req = JSON.parse(request.requestBody)
+        let persona = mockPersonas.find(
+          (p) => p.Tag == req.Tag || p.Name == req.Tag
+        )
+        if (!persona) {
+          return new Response(404, {}, { error: 'persona not found' })
+        }
+        if (req.Minutes <= 0) {
+          delete mockPersonasState.PauseUntil[persona.Tag]
+        } else {
+          mockPersonasState.PauseUntil[persona.Tag] =
+            parseInt(Date.now() / 1000) + req.Minutes * 60
+        }
+        return mockPersonasState
+      })
+
+      this.put('/parentalControls/extend', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+        let req = JSON.parse(request.requestBody)
+        let persona = mockPersonas.find(
+          (p) => p.Tag == req.Tag || p.Name == req.Tag
+        )
+        if (!persona) {
+          return new Response(404, {}, { error: 'persona not found' })
+        }
+        if (req.Minutes <= 0) {
+          delete mockPersonasState.GrantUntil[persona.Tag]
+        } else {
+          mockPersonasState.GrantUntil[persona.Tag] =
+            parseInt(Date.now() / 1000) + req.Minutes * 60
+        }
+        delete mockPersonasState.PauseUntil[persona.Tag]
+        return mockPersonasState
+      })
+
+      this.put('/parentalControls/reset', (schema, request) => {
+        if (!authOK(request)) {
+          return new Response(401, {}, { error: 'invalid auth' })
+        }
+        let req = JSON.parse(request.requestBody)
+        let persona = mockPersonas.find(
+          (p) => p.Tag == req.Tag || p.Name == req.Tag
+        )
+        if (!persona) {
+          return new Response(404, {}, { error: 'persona not found' })
+        }
+        delete mockPersonasState.UsedMinutes[persona.Tag]
+        delete mockPersonasState.PauseUntil[persona.Tag]
+        delete mockPersonasState.GrantUntil[persona.Tag]
+        return mockPersonasState
+      })
+    }
+  })
+
+  try {
+    if (jest !== undefined) {
+      server.logging = false
+    }
+  } catch (err) {}
+
+  installModelArtifactFetch(server)
+  return server
+}

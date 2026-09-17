@@ -1,0 +1,21 @@
+[Unit]
+Description=Read-only public metrics and dashboard
+After=network.target
+[Service]
+User=pi-public
+Group=pi-public
+ExecStart=/usr/bin/python3 /opt/pi-console/current/server/public_server.py
+Restart=on-failure
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+InaccessiblePaths=/srv/storage -/run/docker.sock -/var/run/docker.sock
+PrivateTmp=yes
+PrivateDevices=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_UNIX
+CPUQuota=50%
+MemoryMax=96M
+TasksMax=32
+[Install]
+WantedBy=multi-user.target

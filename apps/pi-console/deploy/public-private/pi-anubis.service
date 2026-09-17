@@ -1,0 +1,24 @@
+[Unit]
+Description=Anubis proof-of-work protection for the public inbox
+After=network.target pi-upload.service
+[Service]
+User=pi-anubis
+Group=pi-anubis
+EnvironmentFile=/etc/pi-gateway/anubis.env
+ExecStart=/opt/anubis/bin/anubis
+StateDirectory=pi-anubis
+StateDirectoryMode=0700
+Restart=on-failure
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+InaccessiblePaths=/srv/storage -/run/docker.sock
+ReadWritePaths=/var/lib/pi-anubis
+PrivateTmp=yes
+PrivateDevices=yes
+CapabilityBoundingSet=
+CPUQuota=100%
+MemoryMax=192M
+TasksMax=64
+[Install]
+WantedBy=multi-user.target

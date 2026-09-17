@@ -1,0 +1,20 @@
+[Unit]
+Description=Allowlisted tailnet service-control broker
+[Service]
+User=root
+Group=pi
+ExecStart=/usr/bin/python3 /opt/pi-console/current/server/control_broker.py
+RuntimeDirectory=pi-control
+RuntimeDirectoryMode=0750
+UMask=0007
+Restart=on-failure
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=
+MemoryMax=64M
+TasksMax=16
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,164 @@
+.acDatetime {
+    display: inline-flex;
+    gap: 20px;
+    align-items: center;
+    align-self: flex-start;
+    width: fit-content;
+    max-width: max-content;
+    padding: 16px 36px;
+    background: linear-gradient(180deg, #fff 0%, #f8f8f0 100%);
+    border: 3px solid #d4cfc3;
+    animation: ac-fade-up 0.5s ease-out;
+    border-radius: 18px;
+
+    .acDate {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding-right: 24px;
+        border-right: 3px solid rgba(159, 146, 125, 0.35);
+
+        .acWeekday {
+            color: #6fba2c;
+            font-weight: 900;
+            font-size: 14px;
+            letter-spacing: 1.5px;
+            text-transform: uppercase;
+        }
+
+        .acMonthday {
+            color: #8b7355;
+            font-weight: 800;
+            font-size: 22px;
+        }
+    }
+
+    .acTime {
+        display: flex;
+        align-items: center;
+        color: #8b7355;
+        font-weight: 900;
+        font-size: 48px;
+        letter-spacing: 2px;
+
+        .acColon {
+            position: relative;
+            top: -0.08em;
+            margin: 0 1px;
+            font-size: 48px;
+            color: #8b7355;
+            animation: blink 1s step-end infinite;
+        }
+    }
+}
+
+// ---------- Game (vertical) ----------
+.acDatetimeGame {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    width: fit-content;
+    max-width: max-content;
+    animation: ac-fade-up 0.5s ease-out;
+
+    .gameTime {
+        display: flex;
+        align-items: center;
+        color: #8b7355;
+        font-weight: 900;
+        font-size: 40px;
+        letter-spacing: 2px;
+
+        .gameColon {
+            position: relative;
+            top: -0.08em;
+            margin: 0 1px;
+            font-size: 40px;
+            color: #8b7355;
+            animation: blink 1s step-end infinite;
+        }
+    }
+
+    .gameDivider {
+        width: calc(100% + 5px);
+        height: 3px;
+        background: rgba(159, 146, 125, 0.35);
+        border-radius: 2px;
+    }
+
+    .gameDate {
+        display: flex;
+        align-items: center;
+        gap: 20px;
+        margin-top: 5px;
+
+        .gameMonthday {
+            color: #8b7355;
+            font-weight: 800;
+            font-size: 22px;
+            letter-spacing: 2px;
+        }
+
+        .gameWeekday {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0 16px;
+            height: 27px;
+            border-radius: 999px;
+            background: #fffbe7;
+            color: #8b7355;
+            font-weight: 900;
+            font-size: 18px;
+            line-height: 1;
+            letter-spacing: 1px;
+        }
+    }
+}
+
+@keyframes blink {
+    50% {
+        opacity: 0;
+    }
+}
+
+@media (max-width: 768px) {
+    .acDatetimeGame {
+        .gameTime {
+            font-size: 32px;
+
+            .gameColon {
+                font-size: 32px;
+            }
+        }
+
+        .gameMonthday {
+            font-size: 14px;
+        }
+    }
+
+    .acDatetime {
+        padding: 12px 20px;
+        gap: 12px;
+
+        .acDate {
+            padding-right: 12px;
+
+            .acWeekday {
+                font-size: 11px;
+            }
+
+            .acMonthday {
+                font-size: 16px;
+            }
+        }
+
+        .acTime {
+            font-size: 32px;
+
+            .acColon {
+                font-size: 32px;
+            }
+        }
+    }
+}

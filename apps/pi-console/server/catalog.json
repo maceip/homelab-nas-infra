@@ -1,0 +1,282 @@
+[
+  {
+    "id": "headscale",
+    "name": "Headscale",
+    "group": "Private access",
+    "unit": "upstream-headscale.service",
+    "protected": true,
+    "readiness": "Configured",
+    "notes": "Public HTTPS coordinator at matts.public.computer. Your owner account and first Android phone are enrolled. Automatic DNS updates remain to be configured.",
+    "source": "https://github.com/spr-networks/spr-headscale"
+  },
+  {
+    "id": "tailscale",
+    "name": "Tailscale / tailscaled",
+    "group": "Private access",
+    "unit": "upstream-tailscale.service",
+    "protected": true,
+    "readiness": "Configured",
+    "notes": "Private encrypted connection to Headscale. No exit node or default routes; ordinary phone internet traffic stays on its current connection. Private SSH is forwarded to the Pi.",
+    "source": "https://github.com/spr-networks/spr-tailscale"
+  },
+  {
+    "id": "nebula",
+    "name": "Nebula / nebula-cert",
+    "group": "Private access",
+    "unit": "upstream-nebula.service",
+    "protected": false,
+    "readiness": "Configured and tested",
+    "notes": "Lighthouse at 192.168.0.150:19424/UDP, overlay 10.203.1.1/24, enabled TUN and private CA. Separate peer passed encrypted overlay ping. Remote WAN access is not configured.",
+    "source": "https://github.com/spr-networks/spr-nebula"
+  },
+  {
+    "id": "dnscrypt",
+    "name": "dnscrypt-proxy",
+    "group": "Privacy",
+    "unit": "upstream-dnscrypt.service",
+    "protected": false,
+    "readiness": "Configured and tested",
+    "notes": "Private 127.0.0.1:19054 resolver; DNSCrypt/DoH enabled, no-log/no-filter requirements enabled. CoreDNS now forwards to it.",
+    "source": "https://github.com/spr-networks/spr-dnscrypt"
+  },
+  {
+    "id": "usque",
+    "name": "Usque",
+    "group": "Private access",
+    "unit": null,
+    "protected": false,
+    "readiness": "Needs input",
+    "notes": "WARP device enrollment is not completed. Free WARP registration/terms or a Zero Trust enrollment choice remains needed; no working gateway is claimed.",
+    "source": "https://github.com/spr-networks/spr-usque"
+  },
+  {
+    "id": "tunwg",
+    "name": "tunwg",
+    "group": "Private access",
+    "unit": null,
+    "protected": false,
+    "readiness": "Needs input",
+    "notes": "Choose the local service and access policy to publish. No public tunnel has been opened.",
+    "source": "https://github.com/spr-networks/spr-tunwg"
+  },
+  {
+    "id": "tor",
+    "name": "Tor / obfs4proxy",
+    "group": "Privacy",
+    "unit": "upstream-tor.service",
+    "protected": false,
+    "readiness": "Configured and tested",
+    "notes": "LAN SOCKS at 192.168.0.56:19050, restricted to loopback/LAN clients. Verified Tor exit from the Mac; authenticated private control socket and circuit query passed. Optional obfs4 bridges and transparent routing are not configured.",
+    "source": "https://github.com/spr-networks/spr-tor"
+  },
+  {
+    "id": "gluetun",
+    "name": "Gluetun",
+    "group": "Private access",
+    "unit": null,
+    "protected": false,
+    "readiness": "Needs input",
+    "notes": "VPN provider and credentials/WireGuard configuration required before an isolated forwarding gateway can be started.",
+    "source": "https://github.com/spr-networks/spr-gluetun"
+  },
+  {
+    "id": "algo",
+    "name": "Algo",
+    "group": "Private access",
+    "unit": null,
+    "protected": false,
+    "readiness": "Needs input",
+    "notes": "Ansible playbook syntax passed. Provisioning needs the selected host/cloud target; no VPN was provisioned on the NAS.",
+    "source": "https://github.com/spr-networks/spr-algo"
+  },
+  {
+    "id": "atlas",
+    "name": "RIPE Atlas probe",
+    "group": "Network",
+    "unit": null,
+    "protected": false,
+    "readiness": "Needs registration",
+    "notes": "Native measurement helper previously returned an ICMP reply. Prepared the persistent probe identity and RXTXRPT setting. Register atlas-probe-key.pub at https://atlas.ripe.net/apply/swprobe/. The managed measurement daemon and its VM are not deployed yet.",
+    "source": "https://github.com/spr-networks/spr-atlas"
+  },
+  {
+    "id": "reticulum",
+    "name": "Reticulum",
+    "group": "Messaging",
+    "unit": "upstream-reticulum.service",
+    "protected": false,
+    "readiness": "Configured and tested",
+    "notes": "Wired LAN AutoInterface and TCP at 192.168.0.56:19087. Separate peer discovered a destination, delivered an encrypted packet and verified its cryptographic delivery proof. Transport routing remains off.",
+    "source": "https://github.com/spr-networks/spr-reticulum"
+  },
+  {
+    "id": "meshtastic",
+    "name": "Meshtastic",
+    "group": "Messaging",
+    "unit": null,
+    "protected": false,
+    "readiness": "Needs hardware/address",
+    "notes": "No USB Meshtastic radio was found. A compatible radio or existing network/Bluetooth radio address is required for connection and message tests.",
+    "source": "https://github.com/spr-networks/spr-meshtastic"
+  },
+  {
+    "id": "opencanary",
+    "name": "OpenCanary",
+    "group": "Security",
+    "unit": "upstream-opencanary.service",
+    "protected": false,
+    "readiness": "Configured and tested",
+    "notes": "Isolated DHCP address 192.168.0.149. Default FTP 21, SSH 22, HTTP 80, MySQL 3306 and Redis 6379 all responded to Mac LAN probes. Actual LAN events were recorded; no outbound notifications were configured.",
+    "source": "https://github.com/spr-networks/spr-opencanary"
+  },
+  {
+    "id": "vaultwarden",
+    "name": "Vaultwarden / web vault",
+    "group": "Applications",
+    "unit": "upstream-vaultwarden.service",
+    "protected": false,
+    "readiness": "Partly configured",
+    "notes": "Private HTTP at 127.0.0.1:19089 passed. Normal client use still needs a trusted HTTPS domain/certificate and owner-account setup. Signups and invitations remain disabled.",
+    "source": "https://github.com/spr-networks/spr-vaultwarden"
+  },
+  {
+    "id": "mitmproxy",
+    "name": "mitmproxy / mitmdump / mitmweb",
+    "group": "Security",
+    "unit": "upstream-mitmproxy.service",
+    "protected": false,
+    "readiness": "Configured and tested",
+    "notes": "Explicit LAN proxy at 192.168.0.56:19082 passed HTTP and HTTPS from the Mac using its CA only for that test. Authenticated management remains 127.0.0.1:19083. Transparent interception requires selecting devices/routing and client trust.",
+    "source": "https://github.com/spr-networks/spr-mitmproxy"
+  },
+  {
+    "id": "wireshark",
+    "name": "Wireshark / TShark / tcpdump",
+    "group": "Security",
+    "unit": null,
+    "protected": false,
+    "readiness": "Tested",
+    "notes": "Captured and decoded controlled HTTP traffic, read the capture with tcpdump and started the compiled Wireshark GUI offscreen. No visual GUI inspection, browser-based SPR UI or ongoing capture is claimed.",
+    "source": "https://github.com/spr-networks/spr-wireshark"
+  },
+  {
+    "id": "nzyme",
+    "name": "nzyme tap",
+    "group": "Security",
+    "unit": null,
+    "protected": false,
+    "readiness": "Needs server/radio",
+    "notes": "Requires nzyme backend URL/token and capture interface. The only Wi-Fi radio is in use; no supported spare monitor-mode radio is present.",
+    "source": "https://github.com/spr-networks/spr-nzyme-tap"
+  },
+  {
+    "id": "simplex",
+    "name": "SimpleX SMP",
+    "group": "Messaging",
+    "unit": "upstream-simplex.service",
+    "protected": false,
+    "readiness": "Configured and tested",
+    "notes": "LAN TLS at 192.168.0.56:19123, private queue password and preserved identity. Authenticated create/send/decrypt/ack/delete test passed; queue and message persistence were tested across a server restart. Client URI is stored privately on the Pi.",
+    "source": "https://github.com/spr-networks/spr-simplex"
+  },
+  {
+    "id": "nostr",
+    "name": "Nostr relay",
+    "group": "Messaging",
+    "unit": "upstream-nostr.service",
+    "protected": false,
+    "readiness": "Configured and tested",
+    "notes": "ws://192.168.0.56:19084; NIP-11 metadata, read/write relay and persistent LMDB. Signed publish/subscription/restart retrieval passed. LAN-only deployment; NIP-42 access management and public TLS are not configured.",
+    "source": "https://github.com/spr-networks/spr-nostr"
+  },
+  {
+    "id": "hermes",
+    "name": "Hermes Agent",
+    "group": "Applications",
+    "unit": "upstream-hermes-vm.service",
+    "protected": false,
+    "readiness": "VM ready; needs model",
+    "notes": "Isolated KVM guest with DHCP 192.168.0.230. DNS/HTTPS egress and dashboard via private vsock/Unix socket passed; local access is 127.0.0.1:19119. No AI provider or inference test yet.",
+    "source": "https://github.com/spr-networks/spr-hermes"
+  },
+  {
+    "id": "herdr",
+    "name": "Herdr",
+    "group": "Applications",
+    "unit": "upstream-herdr-vm.service",
+    "protected": false,
+    "readiness": "Configured and tested",
+    "notes": "KVM guest with DHCP 192.168.0.229; rendered TUI, writable persistent home, read-only userland and Bubblewrap inner sandbox. Guest root and NAS paths are hidden; vsock is disabled. No agent jobs or remote development host configured.",
+    "source": "https://github.com/spr-networks/spr-herdr"
+  },
+  {
+    "id": "bitchat",
+    "name": "Bitchat terminal",
+    "group": "Messaging",
+    "unit": "upstream-bitchat.service",
+    "protected": false,
+    "readiness": "Running; needs peer test",
+    "notes": "Boot-enabled private terminal service. Bluetooth is powered and discovering. A second Bitchat device is needed to verify actual chat delivery.",
+    "source": "https://github.com/spr-networks/bitchat-terminal"
+  },
+  {
+    "id": "krun",
+    "name": "libkrun / libkrunfw / crun as krun",
+    "group": "System",
+    "unit": null,
+    "protected": false,
+    "readiness": "Configured and tested",
+    "notes": "Plain upstream VM runtime. Real guest kernel 6.12.91; router DHCP, DNS and HTTPS egress tested. Hermes/Herdr run in VMs with distinct addresses. No SPR runtime or guest helper is used.",
+    "source": "https://github.com/spr-networks/spr-krun-plugin"
+  },
+  {
+    "id": "lego",
+    "name": "Lego",
+    "group": "System",
+    "unit": null,
+    "protected": false,
+    "readiness": "Needs domain/DNS access",
+    "notes": "ACME command-line tool installed. Headscale currently manages its own public HTTPS certificate; other services need their own HTTPS configuration.",
+    "source": "https://github.com/spr-networks/spr-acme"
+  },
+  {
+    "id": "coredns",
+    "name": "CoreDNS",
+    "group": "Network",
+    "unit": "upstream-coredns.service",
+    "protected": true,
+    "readiness": "Configured and tested",
+    "notes": "LAN DNS at 192.168.0.56:53 TCP/UDP; all configured upstream forwarding goes to dnscrypt-proxy. Mac DNS queries passed. Existing router DHCP/DNS settings were not changed; clients must select this resolver to use it.",
+    "source": "https://github.com/spr-networks/super"
+  },
+  {
+    "id": "coredhcp",
+    "name": "CoreDHCP",
+    "group": "Network",
+    "unit": "upstream-coredhcp.service",
+    "protected": true,
+    "readiness": "Isolated test only",
+    "notes": "DISCOVER/OFFER/REQUEST/ACK passed in the isolated documentation-range test. The existing router supplies LAN and VM leases, so no competing LAN DHCP server was enabled.",
+    "source": "https://github.com/spr-networks/super"
+  },
+  {
+    "id": "wifi",
+    "name": "hostapd / wpa_supplicant",
+    "group": "Network",
+    "unit": null,
+    "protected": true,
+    "readiness": "Installed; AP setup not selected",
+    "notes": "Source-built binaries are available. The existing switch/AP and Wi-Fi client connection stay in use. Creating an additional Pi AP requires SSID/security settings and interface choice; no new AP association test was performed.",
+    "source": "https://github.com/spr-networks/super"
+  },
+  {
+    "id": "rekor",
+    "name": "Rekor Monitor",
+    "group": "Security",
+    "unit": "upstream-rekor.service",
+    "protected": false,
+    "readiness": "Configured and tested",
+    "notes": "Hourly public transparency-log consistency checks, last recorded exit status 0. No outbound notification channel configured.",
+    "source": "https://github.com/spr-networks/super"
+  }
+]

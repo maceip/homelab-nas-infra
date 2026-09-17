@@ -1,0 +1,11 @@
+bots:
+  - name: all-upload-visitors
+    path_regex: .*
+    action: CHALLENGE
+    challenge:
+      algorithm: fast
+      difficulty: 4
+metrics:
+  bind: 127.0.0.1:19115
+  network: tcp
+  debug: false

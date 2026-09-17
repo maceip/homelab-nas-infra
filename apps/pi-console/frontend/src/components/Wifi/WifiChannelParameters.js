@@ -1,0 +1,1006 @@
+import React, { useContext, useEffect, useState } from 'react'
+import PropTypes from 'prop-types'
+
+import { AlertContext } from 'AppContext'
+
+import {
+  Button,
+  ButtonIcon,
+  ButtonText,
+  Checkbox,
+  CheckboxGroup,
+  CheckboxIcon,
+  CheckboxIndicator,
+  CheckboxLabel,
+  FormControl,
+  FormControlError,
+  FormControlErrorText,
+  FormControlErrorIcon,
+  FormControlLabel,
+  FormControlLabelText,
+  Heading,
+  Input,
+  HStack,
+  VStack,
+  Text,
+  InputField,
+  CheckIcon
+} from '@gluestack-ui/themed'
+
+import { Select } from 'components/Select'
+import {
+  buildMldLinks,
+  buildRustapRadioPatch,
+  rustapBandFromFrequency,
+  rustapBandFromMode,
+  rustapModeFromBand,
+  rustapModes,
+  rustapSecondaryLink,
+  rustapWidthsForBand
+} from 'api/WifiRustap'
+
+const hostapdModes = [
+  { label: '5 & 6 GHz', value: 'a' },
+  { label: '2.4 GHz', value: 'g' }
+]
+
+let convertChannelToFrequency = (band, channel) => {
+  let frequency
+
+  if (band === '2.4') {
+    frequency = 2412 + (channel - 1) * 5
+    if (channel === 14) {
+      frequency = 2484
+    }
+  } else if (band === '5') {
+    if (channel >= 1 && channel <= 144) {
+      frequency = 5000 + channel * 5
+    } else if (channel >= 149 && channel <= 169) {
+      frequency = 5000 + (channel - 1) * 5
+    } else if (channel >= 184 && channel <= 196) {
+      frequency = 4000 + channel * 5
+    }
+  } else if (band === '6') {
+    if (channel >= 1 && channel <= 253) {
+      frequency = 5940 + channel * 5
+    }
+  }
+
+  return frequency
+}
+
+const WifiChannelParameters = ({
+  iface,
+  setIface,
+  config,
+  iws,
+  regs,
+  curInterface,
+  onSubmit,
+  ...props
+}) => {
+  const context = useContext(AlertContext)
+  const isRustap = config.backend === 'rustap'
+  const availableModes = isRustap ? rustapModes : hostapdModes
+  const configMode = isRustap ? rustapModeFromBand(config.band) : config.hw_mode
+  const [channel, setChannel] = useState(0)
+  const [bandwidth, setBandwidth] = useState(0)
+  const [bandwidthLabel, setBandwidthLabel] = useState('')
+  const [mode, setMode] = useState(configMode)
+  const [modeLabel, setModeLabel] = useState(
+    availableModes.find((entry) => entry.value === configMode)?.label || ''
+  )
+  const [errors, setErrors] = useState({})
+  const [disable160, setDisable160] = useState(true)
+  const [disable320, setDisable320] = useState(true)
+  const [disableWifi6, setDisableWifi6] = useState(true)
+  const [disableWifi7, setDisableWifi7] = useState(true)
+  const [disableDFS, setDisableDFS] = useState(true)
+  const [groupValues, setGroupValues] = useState([])
+
+  // MLO Link 1 state
+  const [mloChannel, setMloChannel] = useState(0)
+  const [mloBandwidth, setMloBandwidth] = useState(40)
+  const [mloBandwidthLabel, setMloBandwidthLabel] = useState('')
+  const [mloBand, setMloBand] = useState(6)
+  const [mloLinkID, setMloLinkID] = useState(null)
+  const [primaryMldBand, setPrimaryMldBand] = useState(
+    config.hw_mode === 'g' ? 2.4 : config.op_class > 130 ? 6 : 5
+  )
+
+  //some wifi devices were reported to crash during auth if GCMP was enabled,
+  // disable this less common cipher by default but let people enable it
+  const [disableGCMP, setDisableGCMP] = useState(false)
+
+  let bandwidth5 = [
+    { label: '20 MHz', value: 20 },
+    { label: '40 MHz', value: 40 },
+    { label: '80 MHz', value: 80 },
+    { label: '160 MHz', disabled: disable160, value: 160 },
+    { label: '320 MHz (WiFi 7)', disabled: disable320, value: 320 },
+    { label: '80+80 MHz', disabled: true, value: 8080 }
+  ]
+
+  const bandwidth24 = [
+    { label: '20 MHz', value: 20 },
+    { label: '40 MHz', value: 40 }
+  ]
+
+  const [bandwidths, setBandwidths] = useState(bandwidth5)
+
+  const bandwidthOptionsForMode = (newMode) => {
+    if (!isRustap) {
+      const options = newMode === 'a' ? bandwidth5 : bandwidth24
+      if (!groupValues.includes('mlo')) return options
+      const allowed = rustapWidthsForBand(primaryMldBand)
+      return options.filter((entry) => allowed.includes(entry.value))
+    }
+    const allowed = rustapWidthsForBand(rustapBandFromMode(newMode))
+    return bandwidth5.filter((entry) => allowed.includes(entry.value))
+  }
+
+  const handleModeChange = (newMode) => {
+    const selected = availableModes.find((entry) => entry.value === newMode)
+    setMode(newMode)
+    setModeLabel(selected?.label || '')
+    if (!isRustap) {
+      if (newMode === 'g') setPrimaryMldBand(2.4)
+      else if (primaryMldBand === 2.4) setPrimaryMldBand(5)
+    }
+  }
+
+  const handleModeLabelChange = (newLabel) => {
+    const selected = availableModes.find((entry) => entry.label === newLabel)
+    if (!selected) return
+    const options = bandwidthOptionsForMode(selected.value)
+    const defaultWidth = selected.value === 'g' ? 40 : 80
+    handleModeChange(selected.value)
+    if (isRustap) setChannel(0)
+    setBandwidth(defaultWidth)
+    handleBandwidthChange(options, defaultWidth)
+  }
+
+  //workarounds for selectedLabel again
+  const handleBandwidthChange = (bands, newBandwidth) => {
+    let x = bands.find((v) => v.value == newBandwidth)?.label
+    setBandwidths(bands)
+    setBandwidthLabel(x)
+  }
+
+  useEffect(() => {
+    setBandwidths(bandwidthOptionsForMode(mode))
+  }, [mode, disable160, disable320, isRustap, groupValues, primaryMldBand])
+
+  useEffect(() => {
+    let x = bandwidths.find((v) => v.label == bandwidthLabel)?.value
+    setBandwidth(x)
+  }, [bandwidthLabel])
+
+  useEffect(() => {
+    //props.config.interface should match TBD
+
+    // switch to config-based settings
+    handleModeChange(configMode)
+    if (!isRustap && config.op_class > 130 && config.channel == 0) {
+      //select the 6-e acs in this case
+      setChannel('6GHz')
+    } else {
+      setChannel(isRustap ? String(config.channel) : config.channel)
+    }
+
+    let newBandwidth = isRustap ? parseInt(config.width) : 40
+    if (isRustap) {
+      const allowedWidths = rustapWidthsForBand(config.band)
+      if (!allowedWidths.includes(newBandwidth)) {
+        newBandwidth = allowedWidths[0]
+      }
+    } else if (config.vht_oper_chwidth == 0) {
+      newBandwidth = 40
+    } else if (config.vht_oper_chwidth == 1) {
+      newBandwidth = 80
+    } else if (config.vht_oper_chwidth == 2) {
+      newBandwidth = 160
+    } else if (config.vht_oper_chwidth == 3) {
+      setBandwidth(8080)
+      newBandwidth = 8080
+    } else {
+      // no vht. fall through
+      if (config.ht_capab && config.ht_capab.includes('HT40')) {
+        newBandwidth = 40
+      } else {
+        newBandwidth = 20
+      }
+    }
+
+    setBandwidth(newBandwidth)
+    handleBandwidthChange(bandwidthOptionsForMode(configMode), newBandwidth)
+
+    const phy = String(config.phy || '').toLowerCase()
+    const groups = []
+    if (!isRustap && String(config.rsn_pairwise || '').includes('GCMP')) {
+      groups.push('gcmpon')
+    }
+    if (
+      isRustap
+        ? ['ax', 'he', 'be', 'eht'].includes(phy)
+        : config.ieee80211ax == 1
+    ) {
+      groups.push('wifi6')
+    }
+    if (isRustap ? ['be', 'eht'].includes(phy) : config.ieee80211be == 1) {
+      groups.push('wifi7')
+    }
+    if (config.mld === true || config.mld_ap == 1) {
+      groups.push('mlo')
+    }
+    setGroupValues(groups)
+
+    // Load MLO link config
+    const associationLink = Array.isArray(config.mld_links)
+      ? config.mld_links.find(
+          (link) => Number(link.link_id) === Number(config.link_id ?? 0)
+        )
+      : null
+    const configuredPrimaryBand = Number(
+      associationLink?.band ||
+        config.band ||
+        (config.hw_mode === 'g' ? 2.4 : config.op_class > 130 ? 6 : 5)
+    )
+    setPrimaryMldBand(configuredPrimaryBand)
+    const secondary = rustapSecondaryLink(config)
+    if (secondary) {
+      setMloLinkID(parseInt(secondary.link_id))
+      setMloBand(Number(secondary.band || config.band))
+      setMloChannel(parseInt(secondary.channel))
+      const secondaryWidth = parseInt(secondary.width || config.width)
+      setMloBandwidth(secondaryWidth)
+      setMloBandwidthLabel(`${secondaryWidth} MHz`)
+    } else {
+      setMloLinkID(null)
+      setMloBand(configuredPrimaryBand === 6 ? 5 : 6)
+      setMloChannel(0)
+      setMloBandwidth(80)
+      setMloBandwidthLabel('80 MHz')
+    }
+
+    //set bw and channels
+    for (let iw of iws) {
+      if (iw.devices[iface]) {
+        let cur_device = iw.devices[iface]
+        if (!cur_device) continue
+
+        //check for radar/DFS support
+        // Check extended features first (RADAR_BACKGROUND or DFS_OFFLOAD)
+        if (iw.supported_extended_features) {
+          for (let feature of iw.supported_extended_features) {
+            if (
+              feature.includes('RADAR_BACKGROUND') ||
+              feature.includes('DFS_OFFLOAD')
+            ) {
+              setDisableDFS(false)
+              break
+            }
+          }
+        }
+
+        // Also check if any channels have radar detection capability
+        // — the driver supports DFS if it lists radar channels
+        for (let band of iw.bands) {
+          if (band.frequencies) {
+            for (let freq of band.frequencies) {
+              if (freq.includes('radar detection')) {
+                setDisableDFS(false)
+                break
+              }
+            }
+          }
+        }
+
+        //enable 160 MHz if supported by the card
+        for (let band of iw.bands) {
+          if (band.vht_capabilities) {
+            for (let capability of band.vht_capabilities) {
+              if (
+                capability.includes('160 MHz') ||
+                capability.includes('160Mhz')
+              ) {
+                //does card support 160, but doesnt account for regulatory
+                //we do that under channel lists later.
+                setDisable160(false)
+              }
+            }
+          }
+
+          if (band.he_phy_capabilities) {
+            setDisableWifi6(false)
+          }
+
+          if (band.eht_phy_capabilities) {
+            setDisableWifi7(false)
+            //6 GHz bands support 320 MHz with WiFi 7
+            if (band.band && band.band.includes('Band 4')) {
+              setDisable320(false)
+            }
+          }
+        }
+      }
+    }
+  }, [iface, config, iws, curInterface])
+
+  const checkRegsDisable = (frequency, bandwidth) => {
+    if (!regs || !regs.bands) return false
+    for (let reg_band of regs.bands) {
+      if (frequency >= reg_band.start && frequency < reg_band.end) {
+        //too much bandwidth asked for, ex reg says 80, but asking for 160
+        if (bandwidth > reg_band.max_bandwidth) {
+          return true
+        }
+        //160 runs past end of band
+        //we subract 10 because the center frequency is what is described
+        if (
+          !isRustap &&
+          frequency >= reg_band.start &&
+          frequency + bandwidth - 10 > reg_band.end
+        ) {
+          return true
+        }
+        break
+      }
+    }
+
+    return false
+  }
+
+  const enumerateChannelOptions = () => {
+    //const iface = props.config.interface
+    let validChannels = []
+    let saw_6e = false
+
+    let expectedFreq = mode == 'a' ? '5' : '2'
+    const selectedRustapBand = rustapBandFromMode(mode)
+    for (let iw of iws) {
+      if (!iw.devices[iface]) {
+        continue
+      }
+
+      for (let band of iw.bands) {
+        //if the band does not match the current mode, skip it
+        if (!band.frequencies) {
+          continue
+        }
+        const firstFrequency = parseInt(band.frequencies[0].split(' ')[0])
+        const candidateBand = rustapBandFromFrequency(firstFrequency)
+        if (
+          isRustap
+            ? candidateBand !== selectedRustapBand
+            : band.frequencies[0][0] != expectedFreq ||
+              (groupValues.includes('mlo') &&
+                mode === 'a' &&
+                candidateBand !== primaryMldBand)
+        ) {
+          continue
+        }
+
+        for (let freq of band.frequencies) {
+          let frequency = parseInt(freq.split(' ')[0])
+
+          let channelNumber = parseInt(freq.split(' ')[2].slice(1, -1))
+          let channelLabel = channelNumber
+
+          let isDisabled = false
+          if (freq.includes('disabled')) {
+            isDisabled = true
+            channelLabel += ' disabled'
+          } else if (freq.includes('no IR')) {
+            isDisabled = true
+            channelLabel += ' No Initial Radiation (No-IR)'
+          } else if (freq.includes('radar')) {
+            channelLabel += ' DFS'
+            // Disable DFS channels if:
+            // 1. IEEE 802.11h is not enabled, OR
+            // 2. Hardware doesn't support radar background detection
+            if (isRustap ? disableDFS : config.ieee80211h !== 1 || disableDFS) {
+              isDisabled = true
+              if (disableDFS && config.ieee80211h === 1) {
+                channelLabel += ' (no radar support)'
+              }
+            }
+          }
+
+          //bandwith check, do not list start indices that
+          // are nonsense for 5/6ghz.
+          if (!isRustap && mode == 'a') {
+            if (bandwidth == 320) {
+              //320 MHz only valid for 6 GHz
+              if (frequency < 5900) {
+                continue
+              }
+              //6ghz 320 MHz valid start channels
+              if (frequency % 320 != 195 && frequency % 320 != 35) {
+                continue
+              }
+            } else if (bandwidth == 160) {
+              //5 ghz and 6ghz offsets
+              if (frequency % 160 != 60 && frequency % 160 != 35) {
+                continue
+              }
+            } else if (bandwidth == 80) {
+              //5 ghz and 6ghz offsets
+              if (
+                frequency % 80 != 60 &&
+                frequency % 80 != 35 &&
+                frequency % 80 != 65
+              ) {
+                continue
+              }
+            } else if (bandwidth == 40) {
+              //5 ghz and 6ghz offsets
+              if (frequency % 40 != 20 && frequency % 40 != 35) {
+                continue
+              }
+            }
+          }
+
+          if (isDisabled == false) {
+            if (frequency > 5900) {
+              saw_6e = true
+            }
+
+            //if not disabled yet, check the regs db also for validity
+            //6095 MHz [29] (12.0 dBm) (no IR)
+            isDisabled = checkRegsDisable(frequency, bandwidth)
+          }
+
+          validChannels.push({
+            value: channelNumber.toString(),
+            label: isRustap
+              ? `${channelLabel} (${selectedRustapBand} GHz)`
+              : channelLabel,
+            toolTip: freq,
+            disabled: isDisabled
+          })
+        }
+      }
+    }
+
+    if (!isRustap) {
+      validChannels.push({
+        value: '0',
+        label: 'Automatic Channel Selection',
+        toolTip: 'Automatic Channel Selection',
+        disabled: false
+      })
+
+      if (saw_6e) {
+        validChannels.push({
+          value: '6GHz',
+          label: '[6GHz] Automatic Channel Selection',
+          toolTip: '[6GHz] Automatic Channel Selection',
+          disabled: false
+        })
+      }
+    }
+
+    //move enabled to top
+    validChannels.sort((a, b) => {
+      if (a.disabled && !b.disabled) {
+        return 1
+      } else if (!a.disabled && b.disabled) {
+        return -1
+      } else {
+        return 0
+      }
+    })
+
+    return validChannels
+  }
+
+  const enumerateMldLinkChannelOptions = (linkBand, linkWidth) => {
+    const options = []
+    const seen = new Set()
+    for (const iw of iws) {
+      if (!iw.devices[iface]) continue
+      for (const radioBand of iw.bands) {
+        if (!radioBand.frequencies) continue
+        for (const entry of radioBand.frequencies) {
+          const frequency = parseInt(entry.split(' ')[0])
+          if (rustapBandFromFrequency(frequency) !== Number(linkBand)) continue
+          const channelNumber = parseInt(entry.split(' ')[2].slice(1, -1))
+          if (!Number.isInteger(channelNumber) || seen.has(channelNumber))
+            continue
+          seen.add(channelNumber)
+
+          let disabled =
+            entry.includes('disabled') ||
+            entry.includes('no IR') ||
+            (entry.includes('radar') && disableDFS)
+          if (!disabled) {
+            disabled = checkRegsDisable(frequency, linkWidth)
+          }
+          options.push({
+            value: channelNumber.toString(),
+            label: `${channelNumber} (${linkBand} GHz)`,
+            toolTip: entry,
+            disabled
+          })
+        }
+      }
+    }
+    return options.sort((left, right) => {
+      if (left.disabled !== right.disabled) return left.disabled ? 1 : -1
+      return parseInt(left.value) - parseInt(right.value)
+    })
+  }
+
+  const isValid = () => {
+    if (!bandwidth) {
+      setErrors({ bandwidth: true })
+      return false
+    }
+
+    if (channel != 0 && !channel) {
+      setErrors({ channel: true })
+      return false
+    }
+
+    if (
+      (isRustap || groupValues.includes('mlo')) &&
+      (!Number.isInteger(Number(channel)) || Number(channel) < 1)
+    ) {
+      setErrors({ channel: true })
+      return false
+    }
+
+    if (
+      groupValues.includes('mlo') &&
+      (!Number.isInteger(Number(mloChannel)) ||
+        Number(mloChannel) < 1 ||
+        !rustapWidthsForBand(mloBand).includes(Number(mloBandwidth)))
+    ) {
+      setErrors({ mloChannel: true })
+      return false
+    }
+
+    return true
+  }
+
+  const getLLAIfaceAddr = (iface) => {
+    for (let iw of iws) {
+      if (iw.devices[iface]) {
+        let base = iw.devices[iface].addr
+        let updatedByte = parseInt(base.substr(0, 2), 16) | 2
+        const updatedByteHex = updatedByte
+          .toString(16)
+          .padStart(2, '0')
+          .toUpperCase()
+        return updatedByteHex + base.substr(2)
+      }
+    }
+    return null
+  }
+
+  const handleSubmit = () => {
+    if (!isValid()) {
+      return
+    }
+    setErrors({})
+
+    let ehtEnabled = groupValues.includes('wifi7')
+
+    if (isRustap) {
+      const phy = ehtEnabled
+        ? 'be'
+        : groupValues.includes('wifi6') || mode === '6'
+        ? 'he'
+        : mode === 'g'
+        ? 'ht'
+        : 'vht'
+      try {
+        onSubmit(
+          buildRustapRadioPatch({
+            config,
+            channel,
+            width: bandwidth,
+            mode,
+            phy,
+            mld: groupValues.includes('mlo'),
+            secondaryBand: mloBand,
+            secondaryChannel: mloChannel,
+            secondaryWidth: mloBandwidth,
+            secondaryLinkID: mloLinkID
+          })
+        )
+      } catch (error) {
+        context.error(error.message)
+      }
+      return
+    }
+
+    let wifiParameters = {
+      //Interface: iface,
+      Channel: channel,
+      Mode: mode,
+      Bandwidth: bandwidth,
+      HT_Enable: true,
+      VHT_Enable: mode == 'a' ? true : false,
+      HE_Enable: true,
+      EHT_Enable: ehtEnabled
+    }
+
+    if (groupValues.includes('gcmpon')) {
+      wifiParameters.Rsn_pairwise = 'CCMP CCMP-256 GCMP GCMP-256'
+    } else {
+      wifiParameters.Rsn_pairwise = 'CCMP CCMP-256'
+    }
+
+    if (groupValues.includes('wifi6')) {
+      wifiParameters.He_mu_beamformer = 1
+      wifiParameters.He_su_beamformee = 1
+      wifiParameters.He_su_beamformer = 1
+      wifiParameters.Ieee80211ax = 1
+    } else {
+      wifiParameters.He_mu_beamformer = 0
+      wifiParameters.He_su_beamformee = 0
+      wifiParameters.He_su_beamformer = 0
+      wifiParameters.Ieee80211ax = 0
+    }
+
+    if (ehtEnabled) {
+      wifiParameters.Ieee80211be = 1
+    } else {
+      wifiParameters.Ieee80211be = 0
+    }
+
+    wifiParameters.mld = groupValues.includes('mlo')
+    if (wifiParameters.mld) {
+      try {
+        wifiParameters.link_id = Number(config.link_id ?? 0)
+        wifiParameters.mld_links = buildMldLinks({
+          config,
+          channel,
+          width: bandwidth,
+          mode,
+          primaryBand: primaryMldBand,
+          secondaryBand: mloBand,
+          secondaryChannel: mloChannel,
+          secondaryWidth: mloBandwidth,
+          secondaryLinkID: mloLinkID
+        })
+      } catch (error) {
+        context.error(error.message)
+        return
+      }
+    }
+
+    onSubmit(wifiParameters)
+  }
+
+  let checkboxProps = disableWifi6 ? { isDisabled: true } : {}
+  let wifi7CheckboxProps = disableWifi7 ? { isDisabled: true } : {}
+  let mloCheckboxProps = disableWifi7 ? { isDisabled: true } : {}
+  let gcmpCheckboxProps = disableGCMP ? { isDisabled: false } : {}
+
+  return (
+    <>
+      <HStack justifyContent="space-between" p="$4">
+        <Heading size="sm">Channel Selection</Heading>
+      </HStack>
+
+      <VStack
+        space="md"
+        bg="$backgroundCardLight"
+        sx={{ _dark: { bg: '$backgroundCardDark' } }}
+        p="$4"
+        pb="$8"
+      >
+        <Text pb="$4" color="$muted500" flexWrap="wrap">
+          Use the Channel Selection to make sure the correct Frequency,
+          Bandwidth &amp; Channel is set. This will update your{' '}
+          {isRustap ? 'RustAP' : 'HostAP'} config.
+        </Text>
+
+        {disableDFS && mode == 'a' ? (
+          <Text pb="$4" color="$warning600" flexWrap="wrap" size="sm">
+            ⚠️ DFS channels are disabled: This WiFi card does not support radar
+            detection (RADAR_BACKGROUND or DFS_OFFLOAD feature). DFS channels
+            require hardware support for detecting radar signals to comply with
+            regulations.
+          </Text>
+        ) : null}
+
+        {groupValues.includes('mlo') ? (
+          <Heading size="xs">
+            {isRustap ? `Association Link ${config.link_id ?? 0}` : 'Link 1'}
+          </Heading>
+        ) : null}
+
+        {groupValues.includes('mlo') && !isRustap && mode === 'a' ? (
+          <FormControl>
+            <FormControlLabel>
+              <FormControlLabelText>
+                Association Link Frequency Band
+              </FormControlLabelText>
+            </FormControlLabel>
+            <Select
+              selectedValue={String(primaryMldBand)}
+              onValueChange={(value) => {
+                const nextBand = Number(value)
+                setPrimaryMldBand(nextBand)
+                setChannel(0)
+                const widths = rustapWidthsForBand(nextBand)
+                if (!widths.includes(Number(bandwidth))) {
+                  const nextWidth = widths.includes(80) ? 80 : widths[0]
+                  setBandwidth(nextWidth)
+                  handleBandwidthChange(
+                    bandwidthOptionsForMode(mode),
+                    nextWidth
+                  )
+                }
+              }}
+            >
+              <Select.Item label="5 GHz" value="5" />
+              <Select.Item label="6 GHz" value="6" />
+            </Select>
+          </FormControl>
+        ) : null}
+
+        <VStack
+          sx={{ '@md': { flexDirection: 'row', alignItems: 'center' } }}
+          space="md"
+        >
+          <FormControl flex={1}>
+            <FormControlLabel>
+              <FormControlLabelText>Frequency Band</FormControlLabelText>
+            </FormControlLabel>
+            {/*
+            <Select
+              selectedValue={channel}
+              onValueChange={(value) => setChannel(parseInt(value))}
+            >
+              <Select.Item label="" value={0} />
+              {enumerateChannelOptions().map((item) => (
+                <Select.Item
+                  key={item.label}
+                  label={item.label}
+                  value={item.value}
+                  isDisabled={item.disabled}
+                />
+              ))}
+              */}
+            <Select
+              selectedValue={modeLabel}
+              defaultValue={modeLabel}
+              onValueChange={(value) => {
+                handleModeLabelChange(value)
+              }}
+            >
+              {availableModes.map((item) => (
+                <Select.Item
+                  key={item.label}
+                  label={item.label}
+                  value={item.label}
+                  isDisabled={item.disabled}
+                />
+              ))}
+            </Select>
+          </FormControl>
+
+          <FormControl flex={1} isInvalid={'bandwidth' in errors}>
+            <FormControlLabel>
+              <FormControlLabelText>Bandwidth</FormControlLabelText>
+            </FormControlLabel>
+            <Select
+              selectedValue={bandwidthLabel}
+              onValueChange={(value) => {
+                setBandwidthLabel(value)
+              }}
+            >
+              <Select.Item label="" value={0} />
+              {bandwidths.map((item) => (
+                <Select.Item
+                  key={item.label}
+                  label={item.label}
+                  value={item.label}
+                  isDisabled={item.disabled}
+                />
+              ))}
+            </Select>
+            {'bandwidth' in errors ? (
+              <FormControlError>
+                <FormControlErrorText>Invalid Bandwidth</FormControlErrorText>
+              </FormControlError>
+            ) : null}
+          </FormControl>
+
+          <FormControl flex={1} isInvalid={'channel' in errors}>
+            <FormControlLabel for="Channel">
+              <FormControlLabelText>Channel {channel}</FormControlLabelText>
+            </FormControlLabel>
+            <Select
+              selectedValue={channel}
+              onValueChange={(value) => setChannel(value)}
+            >
+              {enumerateChannelOptions().map((item) => (
+                <Select.Item
+                  label={item.label}
+                  value={item.value}
+                  isDisabled={item.disabled}
+                />
+              ))}
+            </Select>
+            {'channel' in errors ? (
+              <FormControlError>
+                <FormControlErrorText>Invalid Channel</FormControlErrorText>
+              </FormControlError>
+            ) : null}
+          </FormControl>
+        </VStack>
+
+        <CheckboxGroup
+          value={groupValues}
+          accessibilityLabel="WiFi Settings"
+          onChange={(values) => {
+            // MLO requires WiFi 7 (hostapd: cannot enable mld_ap without ieee80211be)
+            let next = [...values]
+            const mloAdded =
+              next.includes('mlo') && !groupValues.includes('mlo')
+            const wifi7Removed =
+              !next.includes('wifi7') && groupValues.includes('wifi7')
+            if (mloAdded && !next.includes('wifi7')) next.push('wifi7')
+            if (wifi7Removed) next = next.filter((v) => v !== 'mlo')
+            setGroupValues(next)
+          }}
+        >
+          <HStack space="md" flexWrap="wrap" rowGap="$2">
+            <Checkbox {...checkboxProps} value={'wifi6'}>
+              <CheckboxIndicator mr="$2">
+                <CheckboxIcon />
+              </CheckboxIndicator>
+              <CheckboxLabel>Wifi 6 (AX)</CheckboxLabel>
+            </Checkbox>
+
+            {!isRustap ? (
+              <Checkbox {...gcmpCheckboxProps} value={'gcmpon'}>
+                <CheckboxIndicator mr="$2">
+                  <CheckboxIcon />
+                </CheckboxIndicator>
+                <CheckboxLabel>Enable GCMP Encryption</CheckboxLabel>
+              </Checkbox>
+            ) : null}
+
+            <Checkbox {...wifi7CheckboxProps} value={'wifi7'}>
+              <CheckboxIndicator mr="$2">
+                <CheckboxIcon />
+              </CheckboxIndicator>
+              <CheckboxLabel>WiFi 7 (BE)</CheckboxLabel>
+            </Checkbox>
+
+            <Checkbox {...mloCheckboxProps} value={'mlo'}>
+              <CheckboxIndicator mr="$2">
+                <CheckboxIcon />
+              </CheckboxIndicator>
+              <CheckboxLabel>MLO</CheckboxLabel>
+            </Checkbox>
+          </HStack>
+        </CheckboxGroup>
+
+        {groupValues.includes('mlo') ? (
+          <VStack space="md" mt="$4">
+            <Heading size="xs">
+              {mloLinkID !== null ? `Link ${mloLinkID}` : 'Additional Link'}
+            </Heading>
+            <HStack
+              sx={{ '@md': { flexDirection: 'row', alignItems: 'center' } }}
+              space="md"
+            >
+              <FormControl flex={1}>
+                <FormControlLabel>
+                  <FormControlLabelText>Frequency Band</FormControlLabelText>
+                </FormControlLabel>
+                <Select
+                  selectedValue={String(mloBand)}
+                  onValueChange={(value) => {
+                    const nextBand = Number(value)
+                    const widths = rustapWidthsForBand(nextBand)
+                    setMloBand(nextBand)
+                    setMloChannel(0)
+                    if (!widths.includes(Number(mloBandwidth))) {
+                      const nextWidth = widths.includes(80) ? 80 : widths[0]
+                      setMloBandwidth(nextWidth)
+                      setMloBandwidthLabel(`${nextWidth} MHz`)
+                    }
+                  }}
+                >
+                  {rustapModes.map((entry) => (
+                    <Select.Item
+                      key={entry.band}
+                      label={entry.label}
+                      value={String(entry.band)}
+                    />
+                  ))}
+                </Select>
+              </FormControl>
+
+              <FormControl flex={1}>
+                <FormControlLabel>
+                  <FormControlLabelText>Bandwidth</FormControlLabelText>
+                </FormControlLabel>
+                <Select
+                  selectedValue={mloBandwidthLabel || `${mloBandwidth} MHz`}
+                  onValueChange={(value) => {
+                    setMloBandwidthLabel(value)
+                    let bw = parseInt(value)
+                    if (!isNaN(bw)) setMloBandwidth(bw)
+                  }}
+                >
+                  {rustapWidthsForBand(mloBand).map((width) => {
+                    const label = `${width} MHz`
+                    return (
+                      <Select.Item
+                        key={width}
+                        label={label}
+                        value={label}
+                        isDisabled={
+                          (width === 160 && disable160) ||
+                          (width === 320 && disable320)
+                        }
+                      />
+                    )
+                  })}
+                </Select>
+              </FormControl>
+
+              <FormControl flex={1} isInvalid={'mloChannel' in errors}>
+                <FormControlLabel>
+                  <FormControlLabelText>Channel</FormControlLabelText>
+                </FormControlLabel>
+                <Select
+                  selectedValue={mloChannel?.toString()}
+                  onValueChange={(value) => setMloChannel(parseInt(value))}
+                >
+                  {enumerateMldLinkChannelOptions(mloBand, mloBandwidth).map(
+                    (item) => (
+                      <Select.Item
+                        key={`${mloBand}-${item.value}`}
+                        label={item.label}
+                        value={item.value}
+                        isDisabled={item.disabled}
+                      />
+                    )
+                  )}
+                </Select>
+                {'mloChannel' in errors ? (
+                  <FormControlError>
+                    <FormControlErrorText>
+                      Select a valid MLO link channel
+                    </FormControlErrorText>
+                  </FormControlError>
+                ) : null}
+              </FormControl>
+            </HStack>
+          </VStack>
+        ) : null}
+
+        <Button
+          size="md"
+          action="primary"
+          sx={{
+            '@base': { w: '$2/3', alignSelf: 'center' },
+            '@md': { w: 120, alignSelf: 'flex-end' }
+          }}
+          mt="$4"
+          onPress={handleSubmit}
+        >
+          <ButtonText>Save</ButtonText>
+          <ButtonIcon as={CheckIcon} ml="$1" />
+        </Button>
+      </VStack>
+    </>
+  )
+}
+
+WifiChannelParameters.propTypes = {
+  notifyChange: PropTypes.func
+}
+
+export default WifiChannelParameters

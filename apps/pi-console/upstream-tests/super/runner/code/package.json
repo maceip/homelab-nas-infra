@@ -1,0 +1,17 @@
+{
+  "name": "test-api",
+  "version": "0.1.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "npx mocha",
+    "test:host": "npx mocha host",
+    "test:plus": "npx mocha plus"
+  },
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "mocha": "^11.7.6",
+    "supertest": "^7.2.2"
+  }
+}

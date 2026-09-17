@@ -1,0 +1,15 @@
+{
+  "reference": "METR local clone supplied by owner",
+  "assets": [
+    {
+      "source": "/Users/mac/stems/public/metr/assets/fonts/instrument-sans/normal-latin.woff2",
+      "path": "instrument-sans-latin.woff2",
+      "sha256": "6219bc4bfdfc5d9b2201dcdf046218b122a758f932e25ed5f168f929b7ca2311"
+    },
+    {
+      "source": "/Users/mac/stems/public/metr/assets/images/risk-report-card-bg.svg",
+      "path": "green-wave.svg",
+      "sha256": "6c6ac7dffca42d43234cd39958d7f3720a9b0ba69d8ec544a4aa432af236bcb6"
+    }
+  ]
+}

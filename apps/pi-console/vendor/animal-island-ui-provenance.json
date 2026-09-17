@@ -1,0 +1,8 @@
+{
+  "source_archive": "animal-island-ui-891455a-pre-rewrite.zip",
+  "archive_sha256": "08149a8f26ec32bb0e7341a93279da5a241b341780f512b0bfc8adba90889226",
+  "upstream_commit": "891455ac8bd1194b1adc5e3a768bc3dd7ad713c5",
+  "package_version": "1.8.0",
+  "license": "CC-BY-NC-4.0",
+  "source_unchanged": true
+}

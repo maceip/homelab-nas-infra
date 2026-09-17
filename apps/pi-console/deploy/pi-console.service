@@ -1,0 +1,29 @@
+[Unit]
+Description=Matt's Pi dashboard (private Headscale access)
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+SupplementaryGroups=systemd-journal
+WorkingDirectory=/opt/pi-console/current
+Environment=PI_CONSOLE_LOCAL=1
+Environment=PI_CONSOLE_PUBLIC_HOST=100.64.0.1
+Environment=PI_CONSOLE_FILE_BROWSER_URL=http://100.64.0.1:8080/files/
+Environment=PI_CONSOLE_ALLOW_CONTROL=0
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin
+ExecStart=/usr/bin/python3 /opt/pi-console/current/server/api_server.py
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/pi/upstream-software/state/headscale
+PrivateTmp=yes
+UMask=0077
+MemoryMax=256M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

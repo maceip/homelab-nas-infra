@@ -1,0 +1,11 @@
+[Unit]
+Description=Expire old public inbox uploads
+[Service]
+User=pi-upload
+Group=pi-inbox
+ExecStart=/usr/bin/python3 /opt/pi-console/current/server/upload_server.py --cleanup
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/pi-upload
+PrivateTmp=yes

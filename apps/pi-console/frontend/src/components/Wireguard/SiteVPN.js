@@ -1,0 +1,309 @@
+import React, { useState, useContext, useEffect, useRef } from 'react'
+
+import { api, pfwAPI, wireguardAPI } from 'api'
+import WireguardAddSite from 'components/Wireguard/WireguardAddSite'
+import ModalForm from 'components/ModalForm'
+import { AlertContext } from 'AppContext'
+import { prettyDate, prettySize } from 'utils'
+
+import {
+  AddIcon,
+  AlertCircleIcon,
+  Button,
+  ButtonIcon,
+  ButtonText,
+  CheckCircleIcon,
+  CloseIcon,
+  FlatList,
+  HStack,
+  Icon,
+  Text,
+  VStack
+} from '@gluestack-ui/themed'
+
+import {
+  ArrowUpCircleIcon,
+  ArrowDownCircleIcon,
+  PencilIcon
+} from 'lucide-react-native'
+
+import { ListHeader, ListItem } from 'components/List'
+
+const SiteVPN = (props) => {
+  const [sites, setSites] = useState(null)
+  const [siteStatus, setSiteStatus] = useState({})
+  const [editSite, setEditSite] = useState(null)
+  const context = useContext(AlertContext)
+
+  const refreshSites = () => {
+    pfwAPI.config().then((config) => {
+      let s = []
+      for (let i = 0; i < config.SiteVPNs.length; i++) {
+        let extension = {
+          Index: i,
+          Interface: 'site' + i
+        }
+        let new_obj = { ...extension, ...config.SiteVPNs[i] }
+        s.push(new_obj)
+      }
+
+      //render the list now; online status is fetched below and fills in after
+      setSites(s)
+
+      //wake up each site first
+      const putPromises = s.map((site) => {
+        return api.put(`/ping/${site.Interface}/127.0.0.1`).catch(() => {})
+      })
+
+      Promise.all(putPromises)
+        .then(() => {
+          //now get wireguard status
+          wireguardAPI.status().then((status) => {
+            let newStatus = {}
+            for (let entry of s) {
+              if (status[entry.Interface]) {
+                newStatus[entry.Interface] = status[entry.Interface]
+              }
+            }
+            setSiteStatus(newStatus)
+          })
+        })
+        .catch((e) => {
+          context.error('Failed to query pfw', e)
+        })
+    })
+    .catch(() => {
+      //pfw is an optional plugin; a 502/unavailable here just means there
+      //are no site VPNs to show, so render an empty list rather than throw.
+      setSites([])
+    })
+  }
+  useEffect(() => {
+    refreshSites()
+  }, [])
+
+  const deleteListItem = (site) => {
+    pfwAPI
+      .deleteSiteVPN(site.Index)
+      .then(refreshSites)
+      .catch((err) => {})
+  }
+
+  const refModal = useRef(null)
+  const refEditModal = useRef(null)
+
+  const triggerModal = () => {
+    refModal.current()
+  }
+
+  const handleEdit = (site) => {
+    setEditSite(site)
+    setTimeout(() => {
+      if (refEditModal.current) {
+        refEditModal.current()
+      }
+    }, 0)
+  }
+
+  const getOnlineStatus = (item) => {
+    let itemStatus = siteStatus[item.Interface]
+    if (!itemStatus) {
+      return null
+    }
+    let peer = Object.keys(itemStatus.peers)[0]
+    if (!peer) {
+      return null
+    }
+    peer = itemStatus.peers[peer]
+    if (!peer) {
+      return null
+    }
+    const isOnlineWithinLastHour =
+      peer.latestHandshake &&
+      Date.now() - peer.latestHandshake * 1e3 < 60 * 60 * 1000
+
+    return (
+      <HStack>
+        <HStack space="xs" alignItems="center">
+          {isOnlineWithinLastHour ? (
+            <>
+              <Icon as={CheckCircleIcon} color="$success600" size="sm" />
+              <Text size="sm">Online</Text>
+            </>
+          ) : (
+            <>
+              <Icon as={AlertCircleIcon} color="$error600" size="sm" />
+              <Text size="sm">Offline</Text>
+            </>
+          )}
+        </HStack>
+
+        {peer.transferRx ? (
+          <HStack flex={1} space="sm">
+            <HStack space="xs" alignItems="center">
+              <Icon as={ArrowUpCircleIcon} color="$muted500" />
+              <Text size="xs">{prettySize(peer.transferTx)}</Text>
+            </HStack>
+            <HStack space="xs" alignItems="center">
+              <Icon as={ArrowDownCircleIcon} color="$muted500" />
+              <Text size="xs">{prettySize(peer.transferRx)}</Text>
+            </HStack>
+          </HStack>
+        ) : null}
+      </HStack>
+    )
+  }
+
+  const notifyChange = (action) => {
+    refModal.current()
+    refreshSites()
+  }
+
+  const notifyEditChange = (action) => {
+    setEditSite(null)
+    if (refEditModal.current) {
+      refEditModal.current()
+    }
+    refreshSites()
+  }
+
+  return (
+    <>
+      <ListHeader title="Site-To-Site VPNs">
+        <ModalForm
+          title="Add Site VPN"
+          triggerText="Add Site"
+          triggerClass="pull-right"
+          triggerProps={{
+            sx: {
+              '@base': { display: 'none' },
+              '@md': { display: sites?.length ? 'flex' : 'none' }
+            }
+          }}
+          modalRef={refModal}
+        >
+          <WireguardAddSite notifyChange={notifyChange} />
+        </ModalForm>
+      </ListHeader>
+      {sites !== null && sites.length ? (
+        <FlatList
+          data={sites}
+          renderItem={({ item }) => (
+            <ListItem>
+              <Text flex={1} bold>
+                {item.Interface}
+              </Text>
+
+              {getOnlineStatus(item)}
+
+              <VStack space="sm" flex={2}>
+                <Text>{item.Address}</Text>
+                <Text>{item.Endpoint}</Text>
+                <HStack space="xs" alignItems="center">
+                  <Text size="xs" bold>DNS:</Text>
+                  {item.DNS ? (
+                    <Text size="xs">{item.DNS}</Text>
+                  ) : (
+                    <Button
+                      size="xs"
+                      variant="link"
+                      onPress={() => handleEdit(item)}
+                    >
+                      <ButtonText size="xs" color="$muted500">
+                        Not set
+                      </ButtonText>
+                    </Button>
+                  )}
+                </HStack>
+              </VStack>
+              <VStack space="sm">
+                <HStack
+                  space="xs"
+                  sx={{
+                    '@base': { display: 'none' },
+                    '@md': { display: 'flex' }
+                  }}
+                  alignItems="center"
+                >
+                  <Text size="xs" bold>Peer:</Text>
+                  <Text size="xs" isTruncated>
+                    {item.PeerPublicKey}
+                  </Text>
+                </HStack>
+                <HStack
+                  space="xs"
+                  sx={{
+                    '@base': { display: 'none' },
+                    '@md': { display: 'flex' }
+                  }}
+                  alignItems="center"
+                >
+                  <Text size="xs" bold>Local:</Text>
+                  <Text size="xs" isTruncated>
+                    {item.PublicKey}
+                  </Text>
+                </HStack>
+              </VStack>
+
+              <HStack space="sm">
+                <Button
+                  size="sm"
+                  variant="link"
+                  onPress={() => handleEdit(item)}
+                >
+                  <ButtonIcon as={PencilIcon} color="$muted500" />
+                </Button>
+                <Button
+                  size="sm"
+                  variant="link"
+                  onPress={() => deleteListItem(item)}
+                >
+                  <ButtonIcon as={CloseIcon} color="$red700" />
+                </Button>
+              </HStack>
+            </ListItem>
+          )}
+          keyExtractor={(item, index) => `${item.Name}${index}`}
+        />
+      ) : null}
+
+      <VStack>
+        {sites !== null && sites.length === 0 ? (
+          <Text px="$4" mb="$4" flexWrap="wrap">
+            There are no site VPNs configured yet
+          </Text>
+        ) : null}
+
+        <Button
+          sx={{
+            '@md': {
+              display: sites?.length === 0 ? 'flex' : 'none'
+            }
+          }}
+          action="primary"
+          variant="solid"
+          rounded="$none"
+          onPress={triggerModal}
+        >
+          <ButtonText>Add a Site</ButtonText>
+          <ButtonIcon as={AddIcon} />
+        </Button>
+      </VStack>
+
+      {editSite ? (
+        <ModalForm
+          title={`Edit ${editSite.Interface}`}
+          modalRef={refEditModal}
+        >
+          <WireguardAddSite
+            key={editSite.Index}
+            site={editSite}
+            notifyChange={notifyEditChange}
+          />
+        </ModalForm>
+      ) : null}
+    </>
+  )
+}
+
+export default SiteVPN

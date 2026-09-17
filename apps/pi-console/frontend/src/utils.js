@@ -1,0 +1,450 @@
+import React from 'react'
+import { Text } from '@gluestack-ui/themed'
+import { Platform } from 'react-native'
+import Clipboard from '@react-native-clipboard/clipboard'
+
+const legacyCopyOnWeb = (data, browser) => {
+  const document = browser.document
+  const selection = browser.getSelection?.() || document?.getSelection?.()
+
+  if (
+    !document?.body ||
+    !selection ||
+    typeof document.createRange !== 'function' ||
+    typeof document.execCommand !== 'function'
+  ) {
+    return false
+  }
+
+  const copyElement = document.createElement('span')
+  const activeElement = document.activeElement
+  const range = document.createRange()
+  let appended = false
+
+  copyElement.textContent = data
+  copyElement.style.position = 'fixed'
+  copyElement.style.top = '0'
+  copyElement.style.clip = 'rect(0, 0, 0, 0)'
+  copyElement.style.whiteSpace = 'pre'
+  copyElement.style.userSelect = 'text'
+
+  try {
+    document.body.appendChild(copyElement)
+    appended = true
+    range.selectNodeContents(copyElement)
+    selection.removeAllRanges()
+    selection.addRange(range)
+
+    return document.execCommand('copy')
+  } catch {
+    return false
+  } finally {
+    selection.removeAllRanges()
+    if (appended) {
+      document.body.removeChild(copyElement)
+    }
+    activeElement?.focus?.()
+  }
+}
+
+export const copyOnWeb = async (data, browser = globalThis) => {
+  const text = String(data ?? '')
+  const clipboard = browser.navigator?.clipboard
+
+  if (
+    browser.isSecureContext !== false &&
+    typeof clipboard?.writeText === 'function'
+  ) {
+    try {
+      await clipboard.writeText(text)
+      return true
+    } catch {}
+  }
+
+  return legacyCopyOnWeb(text, browser)
+}
+
+export const copy = async (data) => {
+  const text = String(data ?? '')
+
+  if (Platform.OS == 'web') {
+    return copyOnWeb(text)
+  }
+
+  Clipboard.setString(text)
+  return true
+}
+
+// util functions
+export const strToDate = (timestamp, locales = null) => {
+  let ts = timestamp
+  if (!ts) return null
+  //golang UTC date format:
+  //2023-07-20 12:57:32.039846038 +0000 UTC m=+92926.449526088
+  if (typeof ts == 'string' && ts.includes('m=')) {
+    ts = ts.replace(/\sm=.*/g, '')
+  }
+
+  if (typeof ts == 'string' && ts.includes("+0000 UTC")) {
+    ts = ts.replace(" +0000 UTC", "Z")
+    ts = ts.replace(" ", "T")
+  }
+
+  return new Date(ts)
+}
+
+// util functions
+export const prettyDate = (timestamp, locales = null) => {
+  return strToDate(timestamp).toLocaleString()
+}
+
+export const timeAgo = (timestamp) => {
+  let date = strToDate(timestamp)
+  if (!date) return ''
+  let seconds = (Date.now() - date.getTime()) / 1e3
+  if (seconds < 60) return 'just now'
+  if (seconds < 3600) return Math.floor(seconds / 60) + 'm ago'
+  if (seconds < 24 * 3600) return Math.floor(seconds / 3600) + 'h ago'
+  if (seconds < 7 * 24 * 3600) return Math.floor(seconds / (24 * 3600)) + 'd ago'
+  return prettyDate(timestamp)
+}
+
+export const prettySize = (sz, round = false) => {
+  let szType = 'b'
+
+  if (sz >= 1024 * 1e3 * 1e3) {
+    sz /= 1024 * 1e3 * 1e3
+    szType = 'GB'
+  } else if (sz >= 1024 * 1e3) {
+    sz /= 1024 * 1e3
+    szType = 'MB'
+  } else if (sz >= 1024) {
+    sz /= 1024
+    szType = 'kB'
+  }
+
+  sz = round ? Math.floor(sz) : sz.toFixed(2)
+  sz = sz.toLocaleString()
+  return `${sz} ${szType}`
+}
+
+export const prettySignal = (signal) => {
+  let className = '$muted500'
+  if (signal >= -50) {
+    className = '$success600'
+  } else if (signal >= -60) {
+    className = '$success500'
+  } else if (signal >= -70) {
+    className = '$warning500'
+  } else {
+    className = '$danger500'
+  }
+
+  return <Text color={className}>{signal}</Text>
+}
+
+export const ucFirst = (t) => t[0].toUpperCase() + t.substr(1)
+
+// Inspired by: https://github.com/davidchambers/Base64.js/blob/master/base64.js
+const chars =
+  'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/='
+
+export const Base64 = {
+  btoa: (input = '') => {
+    let str = input
+    let output = ''
+
+    for (
+      let block = 0, charCode, i = 0, map = chars;
+      str.charAt(i | 0) || ((map = '='), i % 1);
+      output += map.charAt(63 & (block >> (8 - (i % 1) * 8)))
+    ) {
+      charCode = str.charCodeAt((i += 3 / 4))
+
+      if (charCode > 0xff) {
+        throw new Error(
+          "'btoa' failed: The string to be encoded contains characters outside of the Latin1 range."
+        )
+      }
+
+      block = (block << 8) | charCode
+    }
+
+    return output
+  },
+
+  atob: (input = '') => {
+    let str = input.replace(/=+$/, '')
+    let output = ''
+
+    if (str.length % 4 == 1) {
+      throw new Error(
+        "'atob' failed: The string to be decoded is not correctly encoded."
+      )
+    }
+    for (
+      let bc = 0, bs = 0, buffer, i = 0;
+      (buffer = str.charAt(i++));
+      ~buffer && ((bs = bc % 4 ? bs * 64 + buffer : buffer), bc++ % 4)
+        ? (output += String.fromCharCode(255 & (bs >> ((-2 * bc) & 6))))
+        : 0
+    ) {
+      buffer = chars.indexOf(buffer)
+    }
+
+    return output
+  }
+}
+
+
+export const countryCodes = [
+  'AD',
+  'AE',
+  'AF',
+  'AG',
+  'AI',
+  'AL',
+  'AM',
+  'AO',
+  'AQ',
+  'AR',
+  'AS',
+  'AT',
+  'AU',
+  'AW',
+  'AX',
+  'AZ',
+  'BA',
+  'BB',
+  'BD',
+  'BE',
+  'BF',
+  'BG',
+  'BH',
+  'BI',
+  'BJ',
+  'BL',
+  'BM',
+  'BN',
+  'BO',
+  'BQ',
+  'BR',
+  'BS',
+  'BT',
+  'BV',
+  'BW',
+  'BY',
+  'BZ',
+  'CA',
+  'CC',
+  'CD',
+  'CF',
+  'CG',
+  'CH',
+  'CI',
+  'CK',
+  'CL',
+  'CM',
+  'CN',
+  'CO',
+  'CR',
+  'CU',
+  'CV',
+  'CW',
+  'CX',
+  'CY',
+  'CZ',
+  'DE',
+  'DJ',
+  'DK',
+  'DM',
+  'DO',
+  'DZ',
+  'EC',
+  'EE',
+  'EG',
+  'EH',
+  'ER',
+  'ES',
+  'ET',
+  'FI',
+  'FJ',
+  'FK',
+  'FM',
+  'FO',
+  'FR',
+  'GA',
+  'GB',
+  'GD',
+  'GE',
+  'GF',
+  'GG',
+  'GH',
+  'GI',
+  'GL',
+  'GM',
+  'GN',
+  'GP',
+  'GQ',
+  'GR',
+  'GS',
+  'GT',
+  'GU',
+  'GW',
+  'GY',
+  'HK',
+  'HM',
+  'HN',
+  'HR',
+  'HT',
+  'HU',
+  'ID',
+  'IE',
+  'IL',
+  'IM',
+  'IN',
+  'IO',
+  'IQ',
+  'IR',
+  'IS',
+  'IT',
+  'JE',
+  'JM',
+  'JO',
+  'JP',
+  'KE',
+  'KG',
+  'KH',
+  'KI',
+  'KM',
+  'KN',
+  'KP',
+  'KR',
+  'KW',
+  'KY',
+  'KZ',
+  'LA',
+  'LB',
+  'LC',
+  'LI',
+  'LK',
+  'LR',
+  'LS',
+  'LT',
+  'LU',
+  'LV',
+  'LY',
+  'MA',
+  'MC',
+  'MD',
+  'ME',
+  'MF',
+  'MG',
+  'MH',
+  'MK',
+  'ML',
+  'MM',
+  'MN',
+  'MO',
+  'MP',
+  'MQ',
+  'MR',
+  'MS',
+  'MT',
+  'MU',
+  'MV',
+  'MW',
+  'MX',
+  'MY',
+  'MZ',
+  'NA',
+  'NC',
+  'NE',
+  'NF',
+  'NG',
+  'NI',
+  'NL',
+  'NO',
+  'NP',
+  'NR',
+  'NU',
+  'NZ',
+  'OM',
+  'PA',
+  'PE',
+  'PF',
+  'PG',
+  'PH',
+  'PK',
+  'PL',
+  'PM',
+  'PN',
+  'PR',
+  'PS',
+  'PT',
+  'PW',
+  'PY',
+  'QA',
+  'RE',
+  'RO',
+  'RS',
+  'RU',
+  'RW',
+  'SA',
+  'SB',
+  'SC',
+  'SD',
+  'SE',
+  'SG',
+  'SH',
+  'SI',
+  'SJ',
+  'SK',
+  'SL',
+  'SM',
+  'SN',
+  'SO',
+  'SR',
+  'SS',
+  'ST',
+  'SV',
+  'SX',
+  'SY',
+  'SZ',
+  'TC',
+  'TD',
+  'TF',
+  'TG',
+  'TH',
+  'TJ',
+  'TK',
+  'TL',
+  'TM',
+  'TN',
+  'TO',
+  'TR',
+  'TT',
+  'TV',
+  'TW',
+  'TZ',
+  'UA',
+  'UG',
+  'UM',
+  'US',
+  'UY',
+  'UZ',
+  'VA',
+  'VC',
+  'VE',
+  'VG',
+  'VI',
+  'VN',
+  'VU',
+  'WF',
+  'WS',
+  'YE',
+  'YT',
+  'ZA',
+  'ZM',
+  'ZW'
+]

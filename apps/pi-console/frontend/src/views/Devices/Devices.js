@@ -1,0 +1,576 @@
+import React, { useCallback, useContext, useEffect, useState } from 'react'
+
+import { Platform } from 'react-native'
+
+import {
+  View,
+  Text,
+  HStack,
+  Button,
+  ButtonText,
+  ButtonIcon,
+  Fab,
+  FabIcon,
+  FabLabel,
+  AddIcon,
+  FormControlLabelText
+} from '@gluestack-ui/themed'
+
+import { SelectMenu } from 'components/InputSelect'
+
+import { deviceAPI, wifiAPI, meshAPI, classifyAPI } from 'api'
+import APIWifi from 'api/Wifi'
+import { useLocation, useNavigate } from 'react-router-dom'
+import { AlertContext, AppContext } from 'AppContext'
+
+import { ListHeader } from 'components/List'
+import DeviceList from 'components/Devices/DeviceList'
+import { Select } from 'components/Select'
+import { strToDate } from 'utils'
+import AsyncStorage from '@react-native-async-storage/async-storage'
+import { filterDevicesForPane } from 'views/Devices/deviceTypes'
+
+//import ActionSheet from 'components/ActionSheet'
+import { FilterIcon, XIcon, TagIcon, UsersIcon } from 'lucide-react-native'
+
+const gatherStationsByFlag = (stations, flag, invert) => {
+  let authorized = []
+  for (let station in stations) {
+    let includes = stations[station].flags.includes(flag)
+    if (invert != true && includes) {
+      authorized.push(station)
+    } else if (invert && !includes) {
+      authorized.push(station)
+    }
+  }
+  return authorized
+}
+
+//TODO support multi on/off select
+export const TagSelect = ({ sections, value, onChange, ...props }) => {
+  const [isOpen, setIsOpen] = useState(false)
+
+  let menuProps = {}
+  let options = [{ label: 'Show All', value: null, icon: XIcon }]
+  for (let s of sections) {
+    if (s.title == 'Groups') {
+      let opts = s.data.map((v) => ({
+        label: v,
+        value: { Group: v },
+        icon: UsersIcon
+      }))
+      options = [...options, ...opts]
+    } else if (s.title == 'Tags') {
+      let opts = s.data.map((v) => ({
+        label: v,
+        value: { Tag: v },
+        icon: TagIcon
+      }))
+      options = [...options, ...opts]
+    } else {
+      //preset filters with explicit values
+      let opts = s.data.map((v) => ({
+        label: v.label,
+        value: v.value,
+        icon: FilterIcon
+      }))
+      options = [...options, ...opts]
+    }
+  }
+
+  menuProps.options = options
+
+  menuProps.trigger = (triggerProps) => {
+    return (
+      <Button size="xs" action="primary" variant="outline" {...triggerProps}>
+        <ButtonText>{value || 'Groups and tags'}</ButtonText>
+      </Button>
+    )
+  }
+
+  return (
+    <SelectMenu
+      onChange={(v) => {
+        onChange(v)
+      }}
+      value={value}
+      {...menuProps}
+    />
+  )
+
+  /*return (
+    <>
+      <ActionSheet
+        onChange={onChange}
+        value={value}
+        placeholder="Tags and groups"
+        isOpen={isOpen}
+        setIsOpen={setIsOpen}
+        sections={[
+          {
+            data: ['Show All']
+          },
+          ...sections
+        ]}
+      />
+    </>
+  )*/
+}
+
+const recentWindowMs = 7 * 24 * 3600 * 1000
+
+const isNewDevice = (d) => {
+  let first = strToDate(d.DHCPFirstTime)
+  return first && Date.now() - first.getTime() < recentWindowMs
+}
+
+const isUnclassifiedDevice = (d) =>
+  !d.classification?.Category || d.classification.Category == 'unknown'
+
+const Devices = ({ showContainers = false }) => {
+  const context = useContext(AlertContext)
+  const appContext = useContext(AppContext)
+  const navigate = useNavigate()
+  const location = useLocation()
+
+  const [list, setList] = useState([])
+  const [tags, setTags] = useState([])
+  const [groups, setGroups] = useState([])
+  const [sortBy, setSortBy] = useState('date')
+  const [filter, setFilter] = useState(location.state?.filter || {}) // groups, tags, presets
+  const [unknownMacs, setUnknownMacs] = useState([])
+
+  const warnUnknown = useCallback((context, devices, associated) => {
+    let macs = devices.map(dev => dev.MAC)
+    let unknown_macs  = []
+    for (let mac of associated) {
+      if (!macs.includes(mac)) {
+        unknown_macs.push(mac)
+      }
+    }
+
+    setUnknownMacs(u => {
+      let newArray = new Array(...new Set(u.concat(unknown_macs)))
+      if (newArray.length != 0) {
+        context.warning("Devices attempting to connect, but may have the wrong wifi password: " + (newArray).join(", "))
+      }
+      return newArray
+    })
+
+  }, [])
+
+  const sortDevices = useCallback((a, b) => {
+    const parseIP = (ip) => {
+      return ip.split('.').map(Number)
+      //b.RecentIP.replace(/[^0-9]+/g, '')
+    }
+
+    if (sortBy == 'online') {
+      return (
+        parseInt(parseInt(+b.isConnected || 0) * 1000 + parseIP(a.RecentIP)) -
+        parseInt(parseInt(+a.isConnected || 0) * 1000 + parseIP(b.RecentIP))
+      )
+    } else if (sortBy == 'date') {
+      if (a.DHCPLastTime == '') {
+        return 1
+      }
+      if (b.DHCPLastTime == '') {
+        return -1
+      }
+
+      return strToDate(b.DHCPLastTime) - strToDate(a.DHCPLastTime)
+    } else if (sortBy == 'name') {
+      return a.Name.toLowerCase().localeCompare(b.Name.toLowerCase())
+    } else if (sortBy == 'ip') {
+      const aIP = parseIP(a.RecentIP)
+      const bIP = parseIP(b.RecentIP)
+
+      for (let i = 0; i <= 4; i++) {
+        if (aIP[i] !== bIP[i]) {
+          return aIP[i] - bIP[i]
+        }
+      }
+
+      return 0
+    }
+  }, [sortBy])
+
+  // enrichment phases merge by identity: rows that did not change keep their
+  // object so the memoized Device rows skip re-rendering
+  const refreshDevices = useCallback((forceFetch = false) => {
+    //NOTE use appContext for devices to avoid fetching x2
+    //appContext.getDevices(forceFetch)
+    deviceAPI
+      .list()
+      .then((devices) => {
+        if (!devices) {
+          return
+        }
+
+        if (!Array.isArray(devices)) {
+          devices = Object.values(devices)
+        }
+
+        //used to resolve device names in notifications
+        AsyncStorage.setItem('devices', JSON.stringify(devices)).catch(
+          (err) => {}
+        )
+
+        const paneDevices = filterDevicesForPane(devices, showContainers)
+        let macs = paneDevices
+          .filter((d) => d.MAC.includes(':'))
+          .map((d) => d.MAC)
+
+        setList(paneDevices.sort(sortDevices))
+
+        setTags([
+          ...new Set(
+            paneDevices
+              .map((d) => d.DeviceTags)
+              .filter((t) => t.length)
+              .flat()
+          )
+        ])
+
+        setGroups([
+          ...new Set(
+            paneDevices
+              .map((d) => d.Groups)
+              .filter((t) => t.length)
+              .flat()
+          )
+        ])
+
+        if (!showContainers && macs && macs.length > 0) {
+          // set device oui if avail
+          deviceAPI
+            .ouis(macs)
+            .then((ouis) => {
+              let ouiMap = {}
+              for (let oui of ouis) {
+                ouiMap[oui.MAC] = oui.Vendor
+              }
+
+              setList((prev) =>
+                prev.map((d) => {
+                  let oui = ouiMap[d.MAC] || ''
+                  return d.oui === oui ? d : { ...d, oui }
+                })
+              )
+            })
+            .catch((err) => {})
+        }
+
+        if (!showContainers) {
+          classifyAPI
+            .list()
+            .then((classifications) => {
+              let byMAC = {}
+              for (let entry of classifications) {
+                byMAC[entry.MAC?.toLowerCase()] = entry
+              }
+
+              setList((prev) =>
+                prev.map((d) => {
+                  let classification = byMAC[d.MAC?.toLowerCase()]
+                  return classification ? { ...d, classification } : d
+                })
+              )
+            })
+            .catch((err) => {})
+        }
+
+        // TODO check wg status for virt
+        if (!showContainers && !appContext.isWifiDisabled) {
+          //for each interface
+          wifiAPI.interfaces('AP').then((interfaces) => {
+              interfaces.forEach((iface) => {
+                wifiAPI
+                  .allStations(iface)
+                  .then((stations) => {
+                    let connectedMACs = gatherStationsByFlag(stations, "[AUTHORIZED]", false)
+                    let associatedNotConnected = gatherStationsByFlag(stations, "[AUTHORIZED]", true)
+                    warnUnknown(context, devices, associatedNotConnected)
+
+                    setList((prev) => {
+                      let devs = prev.map((dev) => {
+                        if (dev.isConnected === true) {
+                          return dev
+                        }
+                        let isConnected = connectedMACs.includes(dev.MAC)
+                        let isAssociatedOnly =
+                          associatedNotConnected.includes(dev.MAC)
+                        if (
+                          dev.isConnected === isConnected &&
+                          dev.isAssociatedOnly === isAssociatedOnly
+                        ) {
+                          return dev
+                        }
+                        return {
+                          ...dev,
+                          isConnected,
+                          isAssociatedOnly,
+                          ...(isConnected ? { LastIface: iface } : {})
+                        }
+                      })
+                      return sortBy == 'online' ? devs.sort(sortDevices) : devs
+                    })
+                  })
+                  .catch((err) => {
+                    context.error('WIFI API Failure', err)
+                  })
+              })
+          })
+
+          meshAPI
+            .meshIter(() => new APIWifi())
+            .then((r) =>
+              r.forEach((remoteWifiApi) => {
+                remoteWifiApi.interfaces
+                  .call(remoteWifiApi)
+                  .then((interfaces) => {
+                      interfaces.forEach((iface) => {
+                        remoteWifiApi.allStations
+                          .call(remoteWifiApi, iface)
+                          .then((stations) => {
+                            let connectedMACs = gatherStationsByFlag(stations, "[AUTHORIZED]", false)
+                            let associatedNotConnected = gatherStationsByFlag(stations, "[AUTHORIZED]", true)
+                            warnUnknown(context, devices, associatedNotConnected)
+
+                            setList((prev) =>
+                              prev.map((dev) => {
+                                if (dev.isConnected === true) {
+                                  return dev
+                                }
+                                let isConnected = connectedMACs.includes(
+                                  dev.MAC
+                                )
+                                let isAssociatedOnly =
+                                  associatedNotConnected.includes(dev.MAC)
+                                if (
+                                  dev.isConnected === isConnected &&
+                                  dev.isAssociatedOnly === isAssociatedOnly
+                                ) {
+                                  return dev
+                                }
+                                return { ...dev, isConnected, isAssociatedOnly }
+                              })
+                            )
+                          })
+                          .catch((err) => {
+                            context.error(
+                              'WIFI API Failure ' +
+                                remoteWifiApi.remoteURL +
+                                ' ' +
+                                iface,
+                              err
+                            )
+                          })
+                      })
+                  })
+              })
+            )
+            .catch((err) => {})
+        }
+      })
+      .catch((err) => {
+        context.error('API Failure', err)
+      })
+  }, [
+    sortDevices,
+    sortBy,
+    appContext.isWifiDisabled,
+    warnUnknown,
+    showContainers
+  ])
+
+  const handleRedirect = () => {
+    if (appContext.isWifiDisabled) {
+      navigate('/admin/wireguard')
+    } else {
+      navigate('/admin/add_device')
+    }
+  }
+
+  useEffect(() => {
+    refreshDevices(true)
+  }, [])
+
+  useEffect(() => {
+    if (list?.length) {
+      setList([...list.sort(sortDevices)])
+    }
+  }, [sortBy])
+
+  useEffect(() => {
+    setList((prev) =>
+      prev.map((d) => {
+        //filter.group, filter.tag
+        let match = false
+
+        if (!filter.Tag && !filter.Group) {
+          match = true
+        } else {
+          d.DeviceTags?.map((deviceTag) => {
+            if (deviceTag.toLowerCase().startsWith(filter.Tag?.toLowerCase())) {
+              match = true
+            }
+          })
+
+          d.Groups?.map((group) => {
+            if (group.toLowerCase().startsWith(filter.Group?.toLowerCase())) {
+              match = true
+            }
+          })
+        }
+
+        let hidden = !match
+        return d.hidden === hidden ? d : { ...d, hidden }
+      })
+    )
+  }, [filter])
+
+  const deleteListItem = useCallback(
+    (id) => {
+      deviceAPI
+        .deleteDevice(id)
+        .then(refreshDevices)
+        .catch((error) =>
+          context.error('[API] deleteDevice error: ' + error.message)
+        )
+    },
+    [refreshDevices]
+  )
+
+  return (
+    <View h="$full">
+      <ListHeader>
+        {/*<Button
+            size="sm"
+            variant="ghost"
+            colorScheme="blueGray"
+            leftIcon={<Icon icon={faFilter} />}
+            onPress={() => {}}
+            >
+            Filter
+          </Button>*/}
+
+        {/*TODO selector here, and filter toggle*/}
+
+        <HStack space="md" alignItems="center">
+          <TagSelect
+            sections={[
+              {
+                title: 'Filters',
+                data: [
+                  { label: 'New this week', value: { New: true } },
+                  { label: 'Unclassified', value: { Unclassified: true } }
+                ]
+              },
+              {
+                title: 'Groups',
+                data: groups
+              },
+              {
+                title: 'Tags',
+                data: tags
+              }
+            ]}
+            value={
+              filter.Tag ||
+              filter.Group ||
+              (filter.New ? 'New this week' : null) ||
+              (filter.Unclassified ? 'Unclassified' : null)
+            }
+            onChange={(v) => {
+              // v is {Tag}, {Group}, a preset like {New: true}, or null
+              setFilter(v || {})
+            }}
+          />
+
+          <FormControlLabelText size="sm">Sort by</FormControlLabelText>
+
+          <Select
+            selectedValue={sortBy}
+            onValueChange={(value) => setSortBy(value)}
+            w="$32"
+            size="sm"
+          >
+            {['online', 'date', 'name', 'ip'].map((opt) => (
+              <Select.Item key={opt} label={opt} value={opt} />
+            ))}
+          </Select>
+
+          {!showContainers ? (
+            <Button
+              action="primary"
+              size="sm"
+              onPress={handleRedirect}
+              display="none"
+              sx={{ '@md': { display: 'flex' } }}
+            >
+              <ButtonText>Add Device</ButtonText>
+              <ButtonIcon as={AddIcon} ml="$1" />
+            </Button>
+          ) : null}
+        </HStack>
+
+        {/*
+        <ButtonGroup size="xs" space="xs">
+          <Button action="primary" onPress={() => setSortBy('date')}>
+            <ButtonText>Sort by Date</ButtonText>
+          </Button>
+
+          <Button action="primary" onPress={() => setSortBy('name')}>
+            <ButtonText>Sort by Name</ButtonText>
+          </Button>
+
+          <Button action="primary" onPress={() => setSortBy('ip')}>
+            <ButtonText>Sort by IP</ButtonText>
+          </Button>
+        </ButtonGroup>
+        */}
+      </ListHeader>
+
+      <DeviceList
+        list={list
+          .filter((d) => d.hidden !== true)
+          .filter((d) => (filter.New ? isNewDevice(d) : true))
+          .filter((d) => (filter.Unclassified ? isUnclassifiedDevice(d) : true))}
+        notifyChange={refreshDevices}
+        deleteListItem={deleteListItem}
+      />
+
+      {!list?.length ? (
+        <View
+          bg="$backgroundCardLight"
+          sx={{
+            _dark: { bg: '$backgroundCardDark' }
+          }}
+        >
+          <Text color="$muted500" p="$4">
+            {showContainers
+              ? 'There are no managed containers configured yet'
+              : 'There are no devices configured yet'}
+          </Text>
+        </View>
+      ) : null}
+
+      {!showContainers ? (
+        <Fab
+          renderInPortal={false}
+          shadow={2}
+          size="sm"
+          onPress={handleRedirect}
+          bg="$primary500"
+          {...(Platform.OS === 'web' && { position: 'fixed' })}
+        >
+          <FabIcon as={AddIcon} mr="$1" />
+          <FabLabel>Add Device</FabLabel>
+        </Fab>
+      ) : null}
+    </View>
+  )
+}
+
+export default Devices

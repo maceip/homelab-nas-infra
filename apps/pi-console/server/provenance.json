@@ -1,0 +1,7 @@
+{
+  "source": "https://github.com/spr-networks/super",
+  "commit": "0010d454a60a428dd779f3fcece8cd6db8254a9b",
+  "frontend_suites": 42,
+  "runtime": "Standalone Linux services; no SPR router runtime",
+  "mode": "Separate public read-only and tailnet administration listeners"
+}

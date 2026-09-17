@@ -1,0 +1,117 @@
+{
+ admin off
+ auto_https disable_redirects
+ servers {
+  timeouts {
+   read_header 10s
+   read_body 130s
+   idle 60s
+  }
+  max_header_size 32KB
+ }
+}
+(security) {
+ header {
+  Strict-Transport-Security "max-age=31536000"
+  X-Content-Type-Options nosniff
+  X-Frame-Options DENY
+  Referrer-Policy no-referrer
+  Permissions-Policy "camera=(), microphone=(), geolocation=()"
+  -Server
+ }
+}
+(coordination) {
+ @headscale path /key /health /ts2021 /machine/* /register/* /auth/* /apple /apple/* /windows /derp /derp/* /bootstrap-dns /verify
+ handle @headscale {
+  reverse_proxy 127.0.0.1:19080
+ }
+}
+https://matts.public.computer {
+ bind 0.0.0.0
+ import security
+ encode zstd gzip
+ log {
+  output stdout
+  format filter {
+   wrap json
+   fields {
+    request>headers delete
+    request>uri delete
+   }
+  }
+ }
+ route {
+  import coordination
+  @upload path /drop/* /.within.website/*
+  handle @upload {
+   request_body {
+    max_size 50MB
+   }
+   header Content-Security-Policy "default-src 'none'; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; frame-src 'none'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'self'"
+   reverse_proxy 127.0.0.1:19111 {
+    header_up X-Real-IP {remote_host}
+    header_up X-Pi-Upload-Gateway {$PI_UPLOAD_GATEWAY}
+    header_up -Tailscale-*
+    header_up -X-Pi-Access
+   }
+  }
+  handle {
+   reverse_proxy 127.0.0.1:19110 {
+    header_up -Tailscale-*
+    header_up -X-Pi-*
+    header_up X-Pi-Client-IP {remote_host}
+    header_up -X-Real-IP
+   }
+  }
+ }
+}
+https://matts.public.computer:19443 {
+ bind 127.0.0.1
+ header {
+  Strict-Transport-Security "max-age=31536000"
+  X-Content-Type-Options nosniff
+  Referrer-Policy no-referrer
+  -Server
+ }
+ encode zstd gzip
+ route {
+  import coordination
+  handle /files/* {
+   header -X-Frame-Options
+   header Content-Security-Policy "frame-ancestors 'self'; object-src 'none'; base-uri 'self'"
+   reverse_proxy 127.0.0.1:19444
+  }
+  handle {
+   reverse_proxy 127.0.0.1:19100 {
+    header_up Host matts.public.computer
+   }
+  }
+ }
+}
+http://:19444 {
+ bind 127.0.0.1
+ log {
+  output stdout
+  format filter {
+   wrap json
+   fields {
+    request>headers delete
+    request>uri delete
+   }
+  }
+ }
+ @private_files {
+  host matts.public.computer 100.64.0.1
+  path /files/*
+ }
+ handle @private_files {
+  reverse_proxy 127.0.0.1:8080
+ }
+ handle {
+  respond "Not found" 404
+ }
+}
+http://:19113 {
+ bind 127.0.0.1
+ redir https://matts.public.computer{uri} 308
+}
